@@ -117,15 +117,24 @@ void Track::TrackFromLastFrame(const Frame &f)
     Eigen::Isometry3d T_s0_spre = mpLastFrame->GetPose();
     Eigen::Isometry3d Tsicur_sipre = T_s0_scur.inverse() * T_s0_spre;
     // Eigen::Isometry3d Tsicur_sipre = Eigen::Isometry3d::Identity();
+    bool frame2frame_ok = true;
     for (int layer = mPyramidLayer - 1; layer >= 0; layer--) {
         cv::Mat img = mpCurrentFrame->mPyramid[layer];
         cv::Mat pre_img = mpLastFrame->mPyramid[layer];
-        PoseEstimationFrame2Frame(pre_img, img, Tsicur_sipre, mpLastFrame->mKeyPoints, layer,
+        frame2frame_ok = PoseEstimationFrame2Frame(pre_img, img, Tsicur_sipre, mpLastFrame->mKeyPoints, layer,
                                   inliers_last, inliers_cur, association);
     }
-    mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
+    if (mUseOdom || frame2frame_ok) {
+        mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
+        mLastRelativeMotion = Tsicur_sipre.inverse();
+    }
+    else {
+        // too few sonar features to constrain the pose; assume no motion rather
+        // than trust a degenerate solve
+        mT_w_sj = mpLastFrame->GetPose();
+        mLastRelativeMotion = Eigen::Isometry3d::Identity();
+    }
     mpCurrentFrame->SetPose(mT_w_sj);
-    mLastRelativeMotion = Tsicur_sipre.inverse();
     // mpLastFrame->mInliers = inliers_last;
     // mpCurrentFrame->mInliers = inliers_cur;
     // BuildAssociation(mpLastFrame, mpCurrentFrame, association);
@@ -197,15 +206,24 @@ void Track::TrackFromWindow(const Frame &f)
     Eigen::Isometry3d T_s0_spre = mpLastFrame->GetPose();
     Eigen::Isometry3d Tsicur_sipre = T_s0_scur.inverse() * T_s0_spre;
     // Eigen::Isometry3d Tsicur_sipre = Eigen::Isometry3d::Identity();
+    bool frame2frame_ok = true;
     for (int layer = mPyramidLayer - 1; layer >= 0; layer--) {
         cv::Mat img = mpCurrentFrame->mPyramid[layer];
         cv::Mat pre_img = mpLastFrame->mPyramid[layer];
-        PoseEstimationFrame2Frame(pre_img, img, Tsicur_sipre, mpLastFrame->mKeyPoints, layer,
+        frame2frame_ok = PoseEstimationFrame2Frame(pre_img, img, Tsicur_sipre, mpLastFrame->mKeyPoints, layer,
                                   inliers_last, inliers_cur, association);
     }
-    mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
+    if (mUseOdom || frame2frame_ok) {
+        mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
+        mLastRelativeMotion = Tsicur_sipre.inverse();
+    }
+    else {
+        // too few sonar features to constrain the pose; assume no motion rather
+        // than trust a degenerate solve
+        mT_w_sj = mpLastFrame->GetPose();
+        mLastRelativeMotion = Eigen::Isometry3d::Identity();
+    }
     mpCurrentFrame->SetPose(mT_w_sj);
-    mLastRelativeMotion = Tsicur_sipre.inverse();
     // mpLastFrame->mInliers = inliers_last;
     // mpCurrentFrame->mInliers = inliers_cur;
     // BuildAssociation(mpLastFrame, mpCurrentFrame, association);

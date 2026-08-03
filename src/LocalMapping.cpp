@@ -188,7 +188,7 @@ void LocalMapping::OptimizeWindow()
         for (auto rit = mActiveFrameWindow.rbegin(); rit != mActiveFrameWindow.rend() - 1; ++rit) {
             auto pF = *rit;
             auto pF_pre = *(rit + 1);
-            if (pF && pF_pre) {
+            if (mpTracker->mUseOdom && pF && pF_pre) {
                 Eigen::Isometry3d T_b0_bj = pF->GetOdomPose();
                 // Eigen::Isometry3d T_bj_b0 = T_b0_bj.inverse();
                 Eigen::Isometry3d T_b0_bi = pF_pre->GetOdomPose();
