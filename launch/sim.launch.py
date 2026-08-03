@@ -18,8 +18,11 @@
 # run therefore needs either an Odometry -> PoseStamped republisher or that block
 # re-enabled.  That topic also came from the robot_localization EKF dropped above.
 #
-# What is kept from the original: the identity map -> odom static transform, the
-# repub_gt node and RViz.  Other differences:
+# What is kept from the original: the identity map -> odom static transform and
+# RViz.  Other differences:
+#   * the "repub_gt" node was dropped along with the rest of the ground-truth
+#     republishing, so the only topics this pipeline needs are the sonar image
+#     and the odometry prior named by the settings file;
 #   * the ROS 1 "tf/static_transform_publisher" node became a
 #     "tf2_ros/static_transform_publisher" node using the named-argument form;
 #   * optional rosbag2 playback was added (the "bag" / "bag_args" arguments).
@@ -106,13 +109,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    repub_gt_node = Node(
-        package='direct_sonar_odometry',
-        executable='repub_gt',
-        name='repub_gt_node',
-        parameters=[{'use_sim_time': use_sim_time}],
-    )
-
     direct_sonar_odometry_node = Node(
         package='direct_sonar_odometry',
         executable='direct_sonar_odometry_node',
@@ -149,7 +145,6 @@ def generate_launch_description():
         declare_bag,
         declare_bag_args,
         static_tf_map_to_odom,
-        repub_gt_node,
         direct_sonar_odometry_node,
         rviz_node,
         OpaqueFunction(function=_bag_play),

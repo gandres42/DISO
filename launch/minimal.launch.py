@@ -14,10 +14,9 @@
 #     republishing.  The pipeline now consumes only two topics: the sonar image
 #     ("SonarTopic") and the odometry prior ("OdomTopic");
 #   * a "cmd_vel_odom" node supplies /odom_pose, the odometry prior named by
-#     config/config_aracati2017.yaml.  The bag does not contain that topic;
-#     upstream it came from the companion Aracati2017_DISO package.  See
-#     src/CmdVelOdom.cpp.  Set "odom_source:=external" to provide it yourself;
-#   * optional rosbag2 playback was added (the "bag" / "bag_args" arguments).
+#     the settings file.  The bag does not contain that topic; upstream it came
+#     from the companion Aracati2017_DISO package.  See src/CmdVelOdom.cpp.
+#     Set "odom_source:=external" to provide it yourself.
 
 import shlex
 
@@ -32,21 +31,6 @@ from launch.substitutions import (
 
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-
-
-def _bag_play(context, *args, **kwargs):
-    """Run "ros2 bag play <bag> <bag_args>" when the "bag" argument is not empty."""
-    bag = LaunchConfiguration('bag').perform(context)
-    if not bag:
-        return []
-    extra_args = shlex.split(LaunchConfiguration('bag_args').perform(context))
-    return [
-        ExecuteProcess(
-            cmd=['ros2', 'bag', 'play', bag] + extra_args,
-            output='screen',
-        )
-    ]
-
 
 def generate_launch_description():
     config = LaunchConfiguration('config')
@@ -83,16 +67,6 @@ def generate_launch_description():
         'use_sim_time',
         default_value='false',
         description='Use the /clock topic instead of the system clock.',
-    )
-    declare_bag = DeclareLaunchArgument(
-        'bag',
-        default_value='',
-        description='Path to a rosbag2 directory to play.  Empty does not play anything.',
-    )
-    declare_bag_args = DeclareLaunchArgument(
-        'bag_args',
-        default_value='--clock -r 0.8',
-        description='Extra arguments passed to "ros2 bag play".',
     )
     declare_odom_source = DeclareLaunchArgument(
         'odom_source',
@@ -148,32 +122,15 @@ def generate_launch_description():
         }],
     )
 
-    rviz_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz_direct_sonar',
-        condition=IfCondition(rviz),
-        arguments=['-d', PathJoinSubstitution([
-            FindPackageShare('direct_sonar_odometry'),
-            'launch',
-            'sonar_odometry.rviz',
-        ])],
-        parameters=[{'use_sim_time': use_sim_time}],
-    )
-
     return LaunchDescription([
         declare_config,
         declare_rviz,
         declare_output_dir,
         declare_debug_dir,
         declare_use_sim_time,
-        declare_bag,
-        declare_bag_args,
         declare_odom_source,
         static_tf_map_to_odom,
         static_tf_odom_to_orb_slam,
         cmd_vel_odom_node,
-        direct_sonar_odometry_node,
-        # rviz_node,
-        # OpaqueFunction(function=_bag_play),
+        direct_sonar_odometry_node
     ])

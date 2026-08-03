@@ -1,7 +1,6 @@
 %YAML:1.0
 
 SonarTopic: "/son"
-#OdomTopic: "/pose_gt"
 OdomTopic: "/odom_pose"
 Range: 48.2896 # range was scaled by SIM3 alignment with GT because of the sacle issue mentioned in the paper
 GradientThreshold: 170.0 # 0~255
@@ -27,7 +26,6 @@ Tbs: !!opencv-matrix
 #          0.000000000,  1.000000000,  0.000000000,  0.0,
 #          0.000000000,  0.000000000,  0.000000000,  1.0 ]
 #SonarTopic: "/rexrov/blueview_p900/sonar_image"
-#OdomTopic: "/rexrov/pose_gt"
 #Range: 10.0
 #GradientThreshold: 300.0
 #PyramidLayer: 3

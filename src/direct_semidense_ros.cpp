@@ -887,19 +887,13 @@ int main(int argc, char** argv)
     // image_transport::TransportHints hints(*G_NODE, "compressed");
     // image_transport::Subscriber sub = it.subscribe("/gemini/gemini/cartesain_img", 100, imageCallback2,
     //                                                &hints);
-    //subcribe gt
-    // rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_gt = G_NODE->create_subscription<nav_msgs::msg::Odometry>("/rexrov/pose_gt", rclcpp::QoS(100), gtCallback);
-    // message_filters::Subscriber<sensor_msgs::msg::Image> image_sub(G_NODE.get(), "/rexrov/blueview_p900/sonar_image", rclcpp::QoS(100));
-    // message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub(G_NODE.get(), "/rexrov/pose_gt", rclcpp::QoS(1));
-    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, nav_msgs::msg::Odometry> MySyncPolicy;
-    // message_filters::Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), image_sub, odom_sub);
-    // sync.registerCallback(std::bind(&combinedCallback, std::placeholders::_1, std::placeholders::_2));
-
-
+    // Sonar image + odometry prior, the same two topics the main pipeline uses.
+    // Upstream this prototype read the odometry straight off the ground truth
+    // (/pose_gt); it now takes the same /odom_pose the System node does.
     image_transport::SubscriberFilter image_sub;
     image_sub.subscribe(*G_NODE, "/son", "compressed", rclcpp::QoS(100));
     message_filters::Subscriber<geometry_msgs::msg::PoseStamped> odom_sub;
-    odom_sub.subscribe(G_NODE.get(), "/pose_gt", rclcpp::QoS(100));
+    odom_sub.subscribe(G_NODE.get(), "/odom_pose", rclcpp::QoS(100));
 
     typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, geometry_msgs::msg::PoseStamped> MySyncPolicy;
     message_filters::Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), image_sub, odom_sub);

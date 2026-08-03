@@ -68,7 +68,9 @@ pip install rosbags
 rosbags-convert --src ARACATI_2017_8bits_full.bag --dst aracati2017 --dst-storage mcap
 ```
 
-The resulting bag provides `/son/compressed`, `/pose_gt` and `/cmd_vel`.
+The resulting bag provides `/son/compressed`, `/cmd_vel` and `/pose_gt`. The
+pipeline only consumes the first two — the sonar image and, through
+`cmd_vel_odom`, the odometry prior; `/pose_gt` is left for offline evaluation.
 
 ### Run
 
@@ -89,22 +91,31 @@ Launch arguments:
 | `bag` | *(empty)* | rosbag2 directory to play; empty plays nothing |
 | `bag_args` | `--clock -r 0.8` | extra arguments for `ros2 bag play` |
 | `use_sim_time` | `false` | follow the bag's `/clock` |
-| `output_dir` | *(empty)* | where `stamped_traj_estimate.txt` / `stamped_groundtruth_gt.txt` are written; empty disables them |
+| `output_dir` | *(empty)* | where `stamped_traj_estimate.txt` (the sonar estimate) and `stamped_groundtruth_gt.txt` (the odometry prior, as the reference trajectory in evo's naming convention) are written; empty disables them |
 | `debug_dir` | *(empty)* | per-edge chi2 dumps and debug images; empty disables them |
 | `rviz` | `true` | start RViz2 with `launch/sonar_odometry.rviz` |
 | `odom_source` | `cmd_vel` | `cmd_vel` runs the bundled dead-reckoning node to produce `/odom_pose`; `external` expects you to publish it |
 
-#### The odometry prior
+#### Inputs
 
-DISO fuses the sonar with an odometry prior read from `OdomTopic` in the settings
+The pipeline needs exactly two topics: the sonar image (`SonarTopic`) and an
+odometry prior (`OdomTopic`, a `geometry_msgs/PoseStamped`). Nothing subscribes
+to ground truth.
+
+DISO fuses the sonar with the odometry prior read from `OdomTopic` in the settings
 file (`/odom_pose` for aracati2017). The Aracati2017 bag does not contain that
 topic — upstream it was produced by the `odom` node of the companion
 [Aracati2017_DISO](https://github.com/SenseRoboticsLab/Aracati2017_DISO) package,
 which dead-reckons the `/cmd_vel` body velocities. So that the bag can be used on
 its own, this repository ships an equivalent node (`cmd_vel_odom`,
 [`src/CmdVelOdom.cpp`](src/CmdVelOdom.cpp)), started by the launch file by
-default. Set `odom_source:=external` to turn it off, or point `OdomTopic` at
-`/pose_gt` to run against ground truth instead.
+default. Set `odom_source:=external` to turn it off and publish `OdomTopic`
+yourself.
+
+`cmd_vel_odom` integrates from the identity pose. That costs nothing: DISO
+re-references every odometry sample to the first one it receives
+(`System::frameLoad`), so the absolute origin and heading cancel out of the
+estimate.
 
 ### Nodes and topics
 
@@ -112,7 +123,6 @@ default. Set `odom_source:=external` to turn it off, or point `OdomTopic` at
 | --- | --- |
 | `aracati2017_node` / `direct_sonar_odometry_node` | DISO itself; takes the settings file as `argv[1]` or as the `settings_file` parameter |
 | `cmd_vel_odom` | dead-reckoned `/odom_pose` prior (see above) |
-| `repub_gt` | re-references `/pose_gt` to its first sample and republishes it under `/gt_repub/*` |
 | `traj_align` | offline SE(3) trajectory alignment / marker visualisation |
 
 DISO publishes `/direct_sonar/pose`, `/direct_sonar/path`, `/direct_sonar/odom`,
@@ -151,6 +161,13 @@ unchanged; only the middleware layer was rewritten. Things worth knowing:
   already incomplete upstream: they referenced a `direct_sonar_odometry_node2`
   target, a `sim_node` target and a `bruce_save.py` script that do not exist in
   this repository. See the header comments in those files.
+* **Ground-truth republishing removed** — the `repub_gt` node (`src/RepubGT.cpp`)
+  re-referenced `/pose_gt` and `/rexrov/pose_gt` to their first sample and echoed
+  them under `/gt_repub/*` purely for RViz overlays. It is gone, along with the
+  `/pose_gt` seed that `cmd_vel_odom` used for its initial pose and the RViz
+  displays that fed off it. Live operation now needs only the sonar image and the
+  odometry prior; ground truth is used offline, against the trajectory files, if
+  at all.
 * **Fixed while porting** — `LocalMapping`'s two-argument constructor never
   assigned `mpTracker`.
 

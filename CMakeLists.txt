@@ -115,12 +115,6 @@ target_link_libraries(cmd_vel_odom PRIVATE
   ${geometry_msgs_TARGETS}
 )
 
-add_executable(repub_gt src/RepubGT.cpp)
-target_link_libraries(repub_gt PRIVATE
-  ${DISO_ROS_LIBS}
-  Eigen3::Eigen
-)
-
 add_executable(traj_align src/traj_se3_align.cpp)
 target_include_directories(traj_align PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(traj_align PRIVATE
@@ -161,7 +155,6 @@ install(TARGETS
   aracati2017_node
   direct_sonar_odometry_node
   cmd_vel_odom
-  repub_gt
   traj_align
   direct_semidense_node
   direct_semidense_test

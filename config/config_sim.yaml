@@ -2,7 +2,6 @@
 
 SonarTopic: "/rexrov/blueview_p900/sonar_image"
 OdomTopic: "/odometry/filtered"
-#OdomTopic: "/rexrov/pose_gt"
 Range: 10.0
 GradientThreshold: 100.0 # 0~255
 PyramidLayer: 3
@@ -27,7 +26,6 @@ Tbs: !!opencv-matrix
 #          0.000000000,  1.000000000,  0.000000000,  0.0,
 #          0.000000000,  0.000000000,  0.000000000,  1.0 ]
 #SonarTopic: "/rexrov/blueview_p900/sonar_image"
-#OdomTopic: "/rexrov/pose_gt"
 #Range: 10.0
 #GradientThreshold: 300.0
 #PyramidLayer: 3
