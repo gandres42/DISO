@@ -2,14 +2,13 @@
 
 SonarTopic: "/son"
 OdomTopic: "/odom_pose"
-Range: 5.0
-GradientThreshold: 100.0 # 0~255
-PyramidLayer: 1
+Range: 5 # range was scaled by SIM3 alignment with GT because of the sacle issue mentioned in the paper
+GradientThreshold: 60.0 # 0~255
+PyramidLayer: 3
 FOV: 60.0
-GradientInlierThreshold: 100.0
-LossThreshold: 50.0
+GradientInlierThreshold: 50.0
+LossThreshold: 10
 UseOdom: 0
-#transformation matrix from sonar to body frame
 Tbs: !!opencv-matrix
   rows: 4
   cols: 4

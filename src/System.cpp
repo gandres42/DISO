@@ -62,11 +62,8 @@ System::System(const std::string &strSettingFile)
     mFOV = ((double) fsSettings["FOV"] / 180) * M_PI;
     int loss_threshold = (int) fsSettings["LossThreshold"];
     double gradient_inlier_threshold = (double) fsSettings["GradientInlierThreshold"];
-    bool use_odom = true;
     cv::FileNode use_odom_node = fsSettings["UseOdom"];
-    if (!use_odom_node.empty()) {
-        use_odom = (int) use_odom_node != 0;
-    }
+    mUseOdom = use_odom_node.empty() ? true : ((int) use_odom_node != 0);
     cv::FileNode node = fsSettings["Tbs"];
     cv::Mat Tbs;
     mT_b_s = Eigen::Isometry3d::Identity();
@@ -91,14 +88,14 @@ System::System(const std::string &strSettingFile)
     RCLCPP_INFO_STREAM(get_logger(), "FOV: " << 180 * mFOV / M_PI);
     RCLCPP_INFO_STREAM(get_logger(), "LossThreshold: " << loss_threshold);
     RCLCPP_INFO_STREAM(get_logger(), "GradientInlierThreshold: " << gradient_inlier_threshold);
-    RCLCPP_INFO_STREAM(get_logger(), "UseOdom: " << use_odom);
+    RCLCPP_INFO_STREAM(get_logger(), "UseOdom: " << mUseOdom);
     RCLCPP_INFO_STREAM(get_logger(), "Tbs: \n" << fixed << setprecision(9) << Tbs);
 
 
     // NOTE: rclcpp::Node declares a static make_shared(), which would hide std::make_shared
     // here, so these have to be explicitly qualified.
     mpTracker = std::make_shared<Track>(this, mRange, mFOV, mPyramidLayer, loss_threshold,
-                                   gradient_inlier_threshold, mT_b_s, use_odom);
+                                   gradient_inlier_threshold, mT_b_s, mUseOdom);
     mpTracker->SetOutputConfig(mOutputDir, mDebugDir);
     shared_ptr<TrackState> track_state = std::make_shared<TrackUpToDate>(mpTracker);
     mpTracker->SetState(track_state);
@@ -199,14 +196,50 @@ void System::frameLoad(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg,
 
 }
 
+void System::frameLoadSonarOnly(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg)
+{
+    double time = rclcpp::Time(image_msg->header.stamp).seconds();
+    Eigen::Isometry3d T_b0_bi = Eigen::Isometry3d::Identity();
+
+    cv::Mat img = cv_bridge::toCvShare(image_msg, "bgr8")->image;
+    cv::Mat down;
+    cv::pyrDown(img, down, cv::Size(img.cols / 2, img.rows / 2));
+    Frame f(down, time, mRange, mFOV, T_b0_bi, mPyramidLayer, mGradientThreshold);
+    ExtracPointCloud(down, time, f.mTheta, f.mTx, f.mTy, f.mScale);
+
+    Eigen::Isometry3d T_s0_si = mpTracker->TrackFrame(f);
+    Eigen::Isometry3d T_bw_bi_sonar = mT_b_s * T_s0_si * mT_b_s.inverse();
+
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp = now();
+    pose.header.frame_id = "map";
+    pose.pose.position.x = T_bw_bi_sonar.translation().x();
+    pose.pose.position.y = T_bw_bi_sonar.translation().y();
+    pose.pose.position.z = T_bw_bi_sonar.translation().z();
+    Eigen::Quaterniond q(T_bw_bi_sonar.rotation());
+    pose.pose.orientation.x = q.x();
+    pose.pose.orientation.y = q.y();
+    pose.pose.orientation.z = q.z();
+    pose.pose.orientation.w = q.w();
+    mSonarPosePub->publish(pose);
+}
+
 void System::runRos()
 {
-    mImageSub.subscribe(*this, mSonarTopic, mImageTransport, rclcpp::QoS(100));
-    mOdomSub.subscribe(this, mOdomTopic, rclcpp::QoS(100));
-    mSync = std::make_shared<message_filters::Synchronizer<MySyncPolicy>>(
-            MySyncPolicy(10), mImageSub, mOdomSub);
-    mSync->registerCallback(std::bind(&System::frameLoad, this,
-                                      std::placeholders::_1, std::placeholders::_2));
+    if (mUseOdom) {
+        mImageSub.subscribe(*this, mSonarTopic, mImageTransport, rclcpp::QoS(100));
+        mOdomSub.subscribe(this, mOdomTopic, rclcpp::QoS(100));
+        mSync = std::make_shared<message_filters::Synchronizer<MySyncPolicy>>(
+                MySyncPolicy(10), mImageSub, mOdomSub);
+        mSync->registerCallback(std::bind(&System::frameLoad, this,
+                                          std::placeholders::_1, std::placeholders::_2));
+    }
+    else {
+        mImageSubOnly = image_transport::create_subscription(
+                *this, mSonarTopic,
+                std::bind(&System::frameLoadSonarOnly, this, std::placeholders::_1),
+                mImageTransport, rclcpp::QoS(100));
+    }
 
 
 

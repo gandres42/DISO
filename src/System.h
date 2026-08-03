@@ -41,6 +41,8 @@ public:
     void frameLoad(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg,
                    const geometry_msgs::msg::PoseStamped::ConstSharedPtr &odom_msg);
 
+    void frameLoadSonarOnly(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg);
+
     void frameLoad2(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg,
                     const nav_msgs::msg::Odometry::ConstSharedPtr &odom_msg);
 
@@ -64,6 +66,8 @@ private:
 
     std::string mOutputDir, mDebugDir, mImageTransport;
     int mSaveCounter = 0;
+    //if false, subscribe to the sonar topic directly instead of syncing with OdomTopic
+    bool mUseOdom;
 
     //odometry initial pose
     Eigen::Isometry3d mT_bw_b0;
@@ -85,6 +89,8 @@ private:
     image_transport::SubscriberFilter mImageSub;
     message_filters::Subscriber<geometry_msgs::msg::PoseStamped> mOdomSub;
     std::shared_ptr<message_filters::Synchronizer<MySyncPolicy>> mSync;
+    //used instead of mImageSub/mOdomSub/mSync when mUseOdom is false
+    image_transport::Subscriber mImageSubOnly;
 };
 
 
