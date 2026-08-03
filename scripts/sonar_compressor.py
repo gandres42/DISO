@@ -31,6 +31,8 @@ class SonarCompressorNode(Node):
             # If the source is already BGR, it acts as a passthrough.
             # If the source was incorrectly tagged as RGB, this safely handles it for OpenCV.
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
+            cv_image = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2RGB)
 
             # 2. Compress the image to JPEG (OpenCV expects BGR natively for this)
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]

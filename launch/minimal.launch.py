@@ -44,7 +44,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             FindPackageShare('direct_sonar_odometry'),
             'config',
-            'config_aracati2017.yaml',
+            'config_hinsdale.yaml',
         ]),
         description='Path to the DISO settings file.',
     )

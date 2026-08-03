@@ -3,30 +3,17 @@
 SonarTopic: "/son"
 OdomTopic: "/odom_pose"
 Range: 5.0
-GradientThreshold: 170.0 # 0~255
-PyramidLayer: 3
+GradientThreshold: 10.0 # 0~255
+PyramidLayer: 2
 FOV: 60.0
-GradientInlierThreshold: 50.0
-LossThreshold: 100
+GradientInlierThreshold: 10.0
+LossThreshold: 50.0
 #transformation matrix from sonar to body frame
 Tbs: !!opencv-matrix
   rows: 4
   cols: 4
   dt: f
-#  data: [ 0.996087228, -0.088375529,  0.000000000,  0.692565226,
-#          0.088375529,  0.996087228, -0.000000000, -0.961352574,
-#          0.000000000,  0.000000000,  1.000000000, -0.000000000,
-#          0.000000000,  0.000000000,  0.000000000,  1.000000000 ]
   data: [ 1.000000000,  0.000000000,  0.000000000,  0.0,
           0.000000000,  1.000000000,  0.000000000,  0.0,
           0.000000000,  0.000000000,  1.000000000,  0.0,
           0.000000000,  0.000000000,  0.000000000,  1.0 ]
-#  data: [ 1.000000000,  0.000000000,  0.000000000,  0.0, #bruce
-#          0.000000000,  0.000000000,  -1.000000000,  0.0,
-#          0.000000000,  1.000000000,  0.000000000,  0.0,
-#          0.000000000,  0.000000000,  0.000000000,  1.0 ]
-#SonarTopic: "/rexrov/blueview_p900/sonar_image"
-#Range: 10.0
-#GradientThreshold: 300.0
-#PyramidLayer: 3
-#FOV: 90.0

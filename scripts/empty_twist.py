@@ -8,7 +8,7 @@ class ZeroVelPublisher(Node):
         super().__init__('zero_vel_publisher')
 
         # Create a publisher on the 'cmd_vel' topic with a queue size of 10
-        self.publisher_ = self.create_publisher(TwistStamped, 'cmd_vel', 10)
+        self.publisher = self.create_publisher(TwistStamped, '/cmd_vel', 10)
 
         # 10 Hz frequency means a period of 0.1 seconds
         timer_period = 0.1
@@ -35,7 +35,7 @@ class ZeroVelPublisher(Node):
         msg.twist.angular.y = 0.0
         msg.twist.angular.z = 0.0
 
-        self.publisher_.publish(msg)
+        self.publisher.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)
