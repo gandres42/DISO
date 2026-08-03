@@ -1,5 +1,4 @@
 # DISO: Direct Imaging Sonar Odometry
-![](img/1.gif)
 
 Welcome to the **Direct Imaging Sonar Odometry (DISO)** system repository!
 
@@ -80,8 +79,6 @@ ros2 launch direct_sonar_odometry aracati2017.launch.xml \
     use_sim_time:=true \
     output_dir:=$HOME/diso_results
 ```
-
-![](img/2.png)
 
 Launch arguments:
 
