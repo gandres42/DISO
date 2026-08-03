@@ -55,7 +55,7 @@ class Track : public enable_shared_from_this<Track>
 {
 public:
     Track(rclcpp::Node* node, double range, double fov, int pyramid_layer, int loss_threshold,
-          double gradient_threshold, Eigen::Isometry3d& T_b_s);
+          double gradient_threshold, Eigen::Isometry3d& T_b_s, bool use_odom = true);
 
     shared_ptr<Frame> mpCurrentFrame;
     shared_ptr<Frame> mpLastFrame;
@@ -135,6 +135,10 @@ private:
     //current pose
     Eigen::Isometry3d mT_w_sj = Eigen::Isometry3d::Identity();
 
+    //relative pose from the last successful frame-to-frame track, used to seed the
+    //next frame's initial pose when mUseOdom is false (constant velocity model)
+    Eigen::Isometry3d mLastRelativeMotion = Eigen::Isometry3d::Identity();
+
     //Local Frame window
     // int mWindowSize = 5;
     // deque<shared_ptr<Frame>> mActiveFrameWindow;
@@ -158,6 +162,8 @@ public:
     double mGradientInlierThreshold;
     //loss threshold
     int mLossThreshold;
+    //if false, PredictCurrentPose seeds from mLastRelativeMotion instead of odom
+    bool mUseOdom;
     double mRange, mFOV;
     shared_mutex mTrackMutex;
 

@@ -28,10 +28,11 @@ using namespace std;
 
 Track::Track(rclcpp::Node* node, double range, double fov, int pyramid_layer, int loss_threshold,
              double gradient_threshold,
-             Eigen::Isometry3d &T_b_s) : mpNode(node), mRange(range), mFOV(fov),
+             Eigen::Isometry3d &T_b_s, bool use_odom) : mpNode(node), mRange(range), mFOV(fov),
                                          mPyramidLayer(pyramid_layer),
                                          mT_b_s(T_b_s), mLossThreshold(loss_threshold),
-                                         mGradientInlierThreshold(gradient_threshold)
+                                         mGradientInlierThreshold(gradient_threshold),
+                                         mUseOdom(use_odom)
 {
     mImagePub = mpNode->create_publisher<sensor_msgs::msg::Image>("/direct_sonar/image",
                                                                  rclcpp::QoS(10));
@@ -124,6 +125,7 @@ void Track::TrackFromLastFrame(const Frame &f)
     }
     mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
     mpCurrentFrame->SetPose(mT_w_sj);
+    mLastRelativeMotion = Tsicur_sipre.inverse();
     // mpLastFrame->mInliers = inliers_last;
     // mpCurrentFrame->mInliers = inliers_cur;
     // BuildAssociation(mpLastFrame, mpCurrentFrame, association);
@@ -203,6 +205,7 @@ void Track::TrackFromWindow(const Frame &f)
     }
     mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
     mpCurrentFrame->SetPose(mT_w_sj);
+    mLastRelativeMotion = Tsicur_sipre.inverse();
     // mpLastFrame->mInliers = inliers_last;
     // mpCurrentFrame->mInliers = inliers_cur;
     // BuildAssociation(mpLastFrame, mpCurrentFrame, association);
@@ -869,6 +872,12 @@ void Track::SetLocalMaper(const shared_ptr<LocalMapping> &pLocalMaper)
 
 void Track::PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur)
 {
+    if (!mUseOdom) {
+        // constant velocity model: assume the same relative motion as the last
+        // successfully tracked frame pair, instead of an external odom prior
+        f_cur->SetPose(f_pre->GetPose() * mLastRelativeMotion);
+        return;
+    }
     Eigen::Isometry3d T_b0_bipre = f_pre->GetOdomPose();
     Eigen::Isometry3d T_b0_bicur = f_cur->GetOdomPose();
     Eigen::Isometry3d T_bipre_bicur = T_b0_bipre.inverse() * T_b0_bicur;
@@ -944,6 +953,8 @@ void Track::PublishPose()
 
 void Track::Reset(shared_ptr<Frame> f_pre)
 {
+    // no valid velocity estimate spans the tracking gap, so fall back to zero motion
+    mLastRelativeMotion = Eigen::Isometry3d::Identity();
     PredictCurrentPose(f_pre, mpCurrentFrame);
     if (mpCurrentFrame->mKeyPoints.size() < mLossThreshold) {
         PublishPose();

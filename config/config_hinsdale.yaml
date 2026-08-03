@@ -8,6 +8,7 @@ PyramidLayer: 1
 FOV: 60.0
 GradientInlierThreshold: 100.0
 LossThreshold: 50.0
+UseOdom: 0
 #transformation matrix from sonar to body frame
 Tbs: !!opencv-matrix
   rows: 4

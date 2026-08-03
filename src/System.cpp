@@ -62,6 +62,11 @@ System::System(const std::string &strSettingFile)
     mFOV = ((double) fsSettings["FOV"] / 180) * M_PI;
     int loss_threshold = (int) fsSettings["LossThreshold"];
     double gradient_inlier_threshold = (double) fsSettings["GradientInlierThreshold"];
+    bool use_odom = true;
+    cv::FileNode use_odom_node = fsSettings["UseOdom"];
+    if (!use_odom_node.empty()) {
+        use_odom = (int) use_odom_node != 0;
+    }
     cv::FileNode node = fsSettings["Tbs"];
     cv::Mat Tbs;
     mT_b_s = Eigen::Isometry3d::Identity();
@@ -86,13 +91,14 @@ System::System(const std::string &strSettingFile)
     RCLCPP_INFO_STREAM(get_logger(), "FOV: " << 180 * mFOV / M_PI);
     RCLCPP_INFO_STREAM(get_logger(), "LossThreshold: " << loss_threshold);
     RCLCPP_INFO_STREAM(get_logger(), "GradientInlierThreshold: " << gradient_inlier_threshold);
+    RCLCPP_INFO_STREAM(get_logger(), "UseOdom: " << use_odom);
     RCLCPP_INFO_STREAM(get_logger(), "Tbs: \n" << fixed << setprecision(9) << Tbs);
 
 
     // NOTE: rclcpp::Node declares a static make_shared(), which would hide std::make_shared
     // here, so these have to be explicitly qualified.
     mpTracker = std::make_shared<Track>(this, mRange, mFOV, mPyramidLayer, loss_threshold,
-                                   gradient_inlier_threshold, mT_b_s);
+                                   gradient_inlier_threshold, mT_b_s, use_odom);
     mpTracker->SetOutputConfig(mOutputDir, mDebugDir);
     shared_ptr<TrackState> track_state = std::make_shared<TrackUpToDate>(mpTracker);
     mpTracker->SetState(track_state);
