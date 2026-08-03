@@ -1,269 +1,193 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.16)
 project(direct_sonar_odometry)
 
-## Compile as C++17, supported in ROS Kinetic and newer
+# C++17, as in the original catkin build.
 set(CMAKE_CXX_STANDARD 17)
-SET(ROS_BUILD_TYPE RelWithDebInfo)
-SET(CMAKE_BUILD_TYPE RelWithDebInfo)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-## Find catkin macros and libraries
-## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
-## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS
-  geometry_msgs
-  image_transport
-  nav_msgs
-  roscpp
-  rospy
-  sensor_msgs
-  std_msgs
-        tf
-        image_transport
-)
-#set(Eigen3_DIR ${PROJECT_SOURCE_DIR}/Thirdparty/eigen3.3.4)
-find_package(Eigen3 3.3 REQUIRED)
-#set(OpenCV_DIR /home/da/project/Thirdparty/opencv3.2/share/OpenCV)
-find_package(OpenCV 3.2 REQUIRED)
-find_package(PCL REQUIRED)
-find_package(fmt REQUIRED)
-## System dependencies are found with CMake's conventions
-# find_package(Boost REQUIRED COMPONENTS system)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
+endif()
 
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
-## Uncomment this if the package has a setup.py. This macro ensures
-## modules and global scripts declared therein get installed
-## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
-# catkin_python_setup()
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(image_transport REQUIRED)
+find_package(message_filters REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
-################################################
-## Declare ROS messages, services and actions ##
-################################################
+# Ubuntu 26.04 ships VTK 9.5, whose exported CMake targets reference
+# JsonCpp::JsonCpp, but nothing in the PCL -> VTK config chain ever calls
+# find_package(JsonCpp).  pcl_conversions pulls in the full PCL (and therefore
+# VTK), so pull in jsoncpp's own config first - it defines the namespaced alias
+# and keeps CMake's generate step from failing on an unresolved target.
+find_package(jsoncpp QUIET)
+find_package(pcl_conversions REQUIRED)
+# Only pcl_common is needed (PointCloud, PointXYZ, transformPointCloud); linking
+# the full ${PCL_LIBRARIES} would drag in pcl_visualization and all of VTK.
+find_package(PCL REQUIRED COMPONENTS common)
 
-## To declare and build messages, services or actions from within this
-## package, follow these steps:
-## * Let MSG_DEP_SET be the set of packages whose message types you use in
-##   your messages/services/actions (e.g. std_msgs, actionlib_msgs, ...).
-## * In the file package.xml:
-##   * add a build_depend tag for "message_generation"
-##   * add a build_depend and a exec_depend tag for each package in MSG_DEP_SET
-##   * If MSG_DEP_SET isn't empty the following dependency has been pulled in
-##     but can be declared for certainty nonetheless:
-##     * add a exec_depend tag for "message_runtime"
-## * In this file (CMakeLists.txt):
-##   * add "message_generation" and every package in MSG_DEP_SET to
-##     find_package(catkin REQUIRED COMPONENTS ...)
-##   * add "message_runtime" and every package in MSG_DEP_SET to
-##     catkin_package(CATKIN_DEPENDS ...)
-##   * uncomment the add_*_files sections below as needed
-##     and list every .msg/.srv/.action file to be processed
-##   * uncomment the generate_messages entry below
-##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
+find_package(OpenCV REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(g2o REQUIRED)
+find_package(Sophus REQUIRED)
 
-## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
-
-## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
-
-## Generate actions in the 'action' folder
-# add_action_files(
-#   FILES
-#   Action1.action
-#   Action2.action
-# )
-
-## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   geometry_msgs#   nav_msgs#   sensor_msgs#   std_msgs
-# )
-
-################################################
-## Declare ROS dynamic reconfigure parameters ##
-################################################
-
-## To declare and build dynamic reconfigure parameters within this
-## package, follow these steps:
-## * In the file package.xml:
-##   * add a build_depend and a exec_depend tag for "dynamic_reconfigure"
-## * In this file (CMakeLists.txt):
-##   * add "dynamic_reconfigure" to
-##     find_package(catkin REQUIRED COMPONENTS ...)
-##   * uncomment the "generate_dynamic_reconfigure_options" section below
-##     and list every .cfg file to be processed
-
-## Generate dynamic reconfigure parameters in the 'cfg' folder
-# generate_dynamic_reconfigure_options(
-#   cfg/DynReconf1.cfg
-#   cfg/DynReconf2.cfg
-# )
-
-###################################
-## catkin specific configuration ##
-###################################
-## The catkin_package macro generates cmake config files for your package
-## Declare things to be passed to dependent projects
-## INCLUDE_DIRS: uncomment this if your package contains header files
-## LIBRARIES: libraries you create in this project that dependent projects also need
-## CATKIN_DEPENDS: catkin_packages dependent projects also need
-## DEPENDS: system dependencies of this project that dependent projects also need
-catkin_package(
-#  INCLUDE_DIRS include
-#  LIBRARIES direct_sonar_odometry
-#  CATKIN_DEPENDS geometry_msgs image_transport nav_msgs roscpp rospy sensor_msgs std_msgs
-#  DEPENDS system_lib
+set(DISO_G2O_LIBS
+  g2o::core
+  g2o::stuff
+  g2o::types_sba
+  g2o::types_slam3d
+  g2o::solver_dense
+  g2o::solver_eigen
 )
 
-###########
-## Build ##
-###########
-
-## Specify additional locations of header files
-## Your package locations should be listed before other locations
-include_directories(
-# include
-        ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/include
-        ${PROJECT_SOURCE_DIR}/include/cv_bridge_slam
-        ${catkin_INCLUDE_DIRS}
-        ${PCL_INCLUDE_DIRS}
-        /home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/Thirdparty/eigen3.3.4/include/eigen3
+set(DISO_ROS_LIBS
+  rclcpp::rclcpp
+  cv_bridge::cv_bridge
+  image_transport::image_transport
+  message_filters::message_filters
+  pcl_conversions::pcl_conversions
+  tf2::tf2
+  tf2_ros::tf2_ros
+  ${std_msgs_TARGETS}
+  ${std_srvs_TARGETS}
+  ${sensor_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${nav_msgs_TARGETS}
+  ${visualization_msgs_TARGETS}
 )
-link_directories(
-#        ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib
-        ${PROJECT_SOURCE_DIR}/src/Thirdparty/g2o/lib
-        ${PCL_LIBRARY_DIRS})
-add_definitions(${PCL_DEFINITIONS})
-set(G2O_LIBS g2o_core g2o_types_sba g2o_types_slam3d g2o_opengl_helper g2o_solver_csparse g2o_stuff g2o_csparse_extension)
 
+# ---------------------------------------------------------------------------
+# Core library
+# ---------------------------------------------------------------------------
+add_library(direct_sonar_odometry_lib SHARED
+  src/System.cpp
+  src/Frame.cpp
+  src/MapPoint.cpp
+  src/Track.cpp
+  src/OptimizationType.cpp
+  src/LocalMapping.cpp
+)
+target_include_directories(direct_sonar_odometry_lib PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<INSTALL_INTERFACE:include>
+  ${OpenCV_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+)
+target_link_directories(direct_sonar_odometry_lib PUBLIC ${PCL_LIBRARY_DIRS})
+target_compile_definitions(direct_sonar_odometry_lib PUBLIC ${PCL_DEFINITIONS})
+target_link_libraries(direct_sonar_odometry_lib PUBLIC
+  ${DISO_ROS_LIBS}
+  ${DISO_G2O_LIBS}
+  ${OpenCV_LIBS}
+  ${PCL_COMMON_LIBRARIES}
+  Eigen3::Eigen
+  Sophus::Sophus
+)
 
-## Declare a C++ library
-# add_library(${PROJECT_NAME}
-#   src/${PROJECT_NAME}/direct_sonar_odometry.cpp
-# )
-
-## Add cmake target dependencies of the library
-## as an example, code may need to be generated before libraries
-## either from message generation or dynamic reconfigure
-# add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-
-## Declare a C++ executable
-## With catkin_make all packages are built within a single CMake context
-## The recommended prefix ensures that target names across packages don't collide
-# add_executable(${PROJECT_NAME}_node src/direct_sonar_odometry_node.cpp)
-#add_executable(direct_sonar_odometry_node src/cv_bridge.cpp src/rgb_colors.cpp src/direct_semidense_ros.cpp
-#        )
-#target_link_libraries(direct_sonar_odometry_node ${catkin_LIBRARIES} ${OpenCV_LIBS} ${G2O_LIBS})
-
-add_library(direct_sonar_odometry_lib src/cv_bridge.cpp src/rgb_colors.cpp
-        src/System.cpp
-        src/System.h
-        src/Frame.cpp
-        src/Frame.h
-        src/MapPoint.cpp
-        src/MapPoint.h
-        src/Track.cpp
-        src/Track.h
-        src/OptimizationType.cpp
-        src/OptimizationType.h
-        src/nanoflann.hpp
-        src/LocalMapping.cpp
-        src/LocalMapping.h)
-target_link_libraries(direct_sonar_odometry_lib ${catkin_LIBRARIES} ${OpenCV_LIBS} ${G2O_LIBS} fmt::fmt-header-only)
-
+# ---------------------------------------------------------------------------
+# Executables
+# ---------------------------------------------------------------------------
 add_executable(aracati2017_node src/run_aracati2017.cpp)
-target_link_libraries(aracati2017_node direct_sonar_odometry_lib)
+target_link_libraries(aracati2017_node PRIVATE direct_sonar_odometry_lib)
 
-#add_executable(sim_node src/run_sim.cpp)
-#target_link_libraries(sim_node direct_sonar_odometry_lib)
+add_executable(direct_sonar_odometry_node src/main.cpp)
+target_link_libraries(direct_sonar_odometry_node PRIVATE direct_sonar_odometry_lib)
 
-
-add_executable(traj_align src/traj_se3_align.cpp)
-target_link_libraries(traj_align ${catkin_LIBRARIES} ${OpenCV_LIBS} ${G2O_LIBS} fmt::fmt-header-only)
+# Dead-reckoning odometry prior for the Aracati2017 bag; see src/CmdVelOdom.cpp.
+add_executable(cmd_vel_odom src/CmdVelOdom.cpp)
+target_link_libraries(cmd_vel_odom PRIVATE
+  rclcpp::rclcpp
+  ${geometry_msgs_TARGETS}
+)
 
 add_executable(repub_gt src/RepubGT.cpp)
-target_link_libraries(repub_gt ${catkin_LIBRARIES})
+target_link_libraries(repub_gt PRIVATE
+  ${DISO_ROS_LIBS}
+  Eigen3::Eigen
+)
 
-#add_executable(direct_sonar_odometry_test src/direct_semidense.cpp)
-#target_link_libraries(direct_sonar_odometry_test ${catkin_LIBRARIES} ${OpenCV_LIBS} ${G2O_LIBS})
-#
-#add_executable(pyramid_test src/pyramid_test.cpp src/nanoflann.hpp)
-#target_link_libraries(pyramid_test ${catkin_LIBRARIES} ${OpenCV_LIBS} ${G2O_LIBS})
+add_executable(traj_align src/traj_se3_align.cpp)
+target_include_directories(traj_align PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(traj_align PRIVATE
+  ${DISO_ROS_LIBS}
+  ${DISO_G2O_LIBS}
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  Sophus::Sophus
+)
 
-## Rename C++ executable without prefix
-## The above recommended prefix causes long target names, the following renames the
-## target back to the shorter version for ease of user use
-## e.g. "rosrun someones_pkg node" instead of "rosrun someones_pkg someones_pkg_node"
-# set_target_properties(${PROJECT_NAME}_node PROPERTIES OUTPUT_NAME node PREFIX "")
+# Standalone prototypes kept from the original repository.  They are not part of
+# the pipeline, but they are built so that they cannot silently rot.
+add_executable(direct_semidense_node src/direct_semidense_ros.cpp)
+target_link_libraries(direct_semidense_node PRIVATE direct_sonar_odometry_lib)
 
-## Add cmake target dependencies of the executable
-## same as for the library above
-# add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_executable(direct_semidense_test src/direct_semidense.cpp)
+target_include_directories(direct_semidense_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(direct_semidense_test PRIVATE
+  ${DISO_G2O_LIBS} ${OpenCV_LIBS} Eigen3::Eigen)
 
-## Specify libraries to link a library or executable target against
-# target_link_libraries(${PROJECT_NAME}_node
-#   ${catkin_LIBRARIES}
-# )
+add_executable(pyramid_test src/pyramid_test.cpp)
+target_include_directories(pyramid_test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(pyramid_test PRIVATE ${OpenCV_LIBS} Eigen3::Eigen)
 
-#############
-## Install ##
-#############
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+install(TARGETS direct_sonar_odometry_lib
+  EXPORT export_${PROJECT_NAME}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
 
-# all install targets should use catkin DESTINATION variables
-# See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
+install(TARGETS
+  aracati2017_node
+  direct_sonar_odometry_node
+  cmd_vel_odom
+  repub_gt
+  traj_align
+  direct_semidense_node
+  direct_semidense_test
+  pyramid_test
+  DESTINATION lib/${PROJECT_NAME}
+)
 
-## Mark executable scripts (Python etc.) for installation
-## in contrast to setup.py, you can choose the destination
-# catkin_install_python(PROGRAMS
-#   scripts/my_python_script
-#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+)
 
-## Mark executables for installation
-## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
-# install(TARGETS ${PROJECT_NAME}_node
-#   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-# )
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  # The upstream sources predate the ament style guides; only run the license
+  # and xmllint checks.
+  set(ament_cmake_copyright_FOUND TRUE)
+  set(ament_cmake_cpplint_FOUND TRUE)
+  set(ament_cmake_uncrustify_FOUND TRUE)
+  set(ament_cmake_flake8_FOUND TRUE)
+  ament_lint_auto_find_test_dependencies()
+endif()
 
-## Mark libraries for installation
-## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_libraries.html
-# install(TARGETS ${PROJECT_NAME}
-#   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-#   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-#   RUNTIME DESTINATION ${CATKIN_GLOBAL_BIN_DESTINATION}
-# )
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(
+  rclcpp std_msgs std_srvs sensor_msgs geometry_msgs nav_msgs visualization_msgs
+  cv_bridge image_transport message_filters tf2 tf2_ros pcl_conversions
+)
 
-## Mark cpp header files for installation
-# install(DIRECTORY include/${PROJECT_NAME}/
-#   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
-#   FILES_MATCHING PATTERN "*.h"
-#   PATTERN ".svn" EXCLUDE
-# )
-
-## Mark other files for installation (e.g. launch and bag files, etc.)
-# install(FILES
-#   # myfile1
-#   # myfile2
-#   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-# )
-
-#############
-## Testing ##
-#############
-
-## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_direct_sonar_odometry.cpp)
-# if(TARGET ${PROJECT_NAME}-test)
-#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
-# endif()
-
-## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)
+ament_package()

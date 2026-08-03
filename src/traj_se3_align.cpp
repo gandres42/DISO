@@ -11,6 +11,9 @@
 #include <climits>
 #include <string>
 #include <sstream>
+#include <iomanip>
+#include <memory>
+#include <filesystem>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -21,6 +24,7 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/features2d/features2d.hpp>
 #include <g2o/core/base_unary_edge.h>
+#include <g2o/core/base_multi_edge.h>
 #include <g2o/core/block_solver.h>
 #include <g2o/core/optimization_algorithm_levenberg.h>
 #include <g2o/solvers/dense/linear_solver_dense.h>
@@ -31,9 +35,9 @@
 
 #include <sophus/geometry.hpp>
 
-#include <ros/ros.h>
-#include <visualization_msgs/MarkerArray.h>
-#include <visualization_msgs/Marker.h>
+#include <rclcpp/rclcpp.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 using namespace std;
 using namespace g2o;
@@ -81,20 +85,23 @@ public:
 
 int main(int argc, char** argv)
 {
-    if (argc != 3) {
-        cout << "Usage: traj_se3_align stamped_traj_estimate.txt stamped_groundtruth.txt" << endl;
+    rclcpp::init(argc, argv);
+
+    const std::vector<std::string> args = rclcpp::remove_ros_arguments(argc, argv);
+    if (args.size() < 3) {
+        RCLCPP_ERROR(rclcpp::get_logger("diso"),
+                     "Usage: traj_se3_align stamped_traj_estimate.txt stamped_groundtruth.txt");
         return 1;
     }
 
-    ifstream fin1(argv[1]);
-    ifstream fin2(argv[2]);
+    ifstream fin1(args[1]);
+    ifstream fin2(args[2]);
     if (!fin1 || !fin2) {
-        cout << "trajectory file does not exist!" << endl;
+        RCLCPP_ERROR(rclcpp::get_logger("diso"), "trajectory file does not exist!");
         return 1;
     }
 
-    ros::init(argc, argv, "traj_se3_align");
-    ros::NodeHandle nh;
+    auto node = std::make_shared<rclcpp::Node>("traj_se3_align");
 
     map<double, Eigen::Isometry3d> poses_sonar;
     map<double, int> time_v1id;
@@ -134,12 +141,11 @@ int main(int argc, char** argv)
     fin2.close();
 
     g2o::SparseOptimizer optimizer;
-    g2o::BlockSolver_6_3::LinearSolverType* linearSolver;
 
-    linearSolver = new g2o::LinearSolverDense<g2o::BlockSolver_6_3::PoseMatrixType>();
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<g2o::BlockSolver_6_3::PoseMatrixType>>();
 
-    g2o::BlockSolver_6_3* solver_ptr = new g2o::BlockSolver_6_3(linearSolver);
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+    auto solver_ptr = std::make_unique<g2o::BlockSolver_6_3>(std::move(linearSolver));
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(std::move(solver_ptr));
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(true);
 
@@ -215,7 +221,13 @@ int main(int argc, char** argv)
     T_e_s = T_e_s_opt;
 
 
-    ofstream outfile("/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_traj_estimate_opt.txt", ios::out);
+    const std::string out_file = node->declare_parameter<std::string>(
+        "output_file", std::string("stamped_traj_estimate_opt.txt"));
+    const std::filesystem::path out_path(out_file);
+    if (!out_path.parent_path().empty()) {
+        std::filesystem::create_directories(out_path.parent_path());
+    }
+    ofstream outfile(out_file, ios::out);
     outfile << "#timestamp x y z qx qy qz qw\n";
     for (auto it: poses_sonar) {
         double time = it.first;
@@ -228,18 +240,18 @@ int main(int argc, char** argv)
     }
 
     //publish pose using MarkerArray
-    visualization_msgs::MarkerArray markers_sonar_pose;
+    visualization_msgs::msg::MarkerArray markers_sonar_pose;
     id = 0;
     for(auto it:poses_sonar){
         Eigen::Isometry3d T_s0_si = it.second;
         Eigen::Quaterniond q_s0_si(T_s0_si.rotation());
-        visualization_msgs::Marker sonar_pose_marker;
+        visualization_msgs::msg::Marker sonar_pose_marker;
         sonar_pose_marker.header.frame_id = "map";
-        sonar_pose_marker.header.stamp = ros::Time::now();
+        sonar_pose_marker.header.stamp = node->now();
         sonar_pose_marker.ns = "sonar_pose";
         sonar_pose_marker.id = id;
-        sonar_pose_marker.type = visualization_msgs::Marker::ARROW;
-        sonar_pose_marker.action = visualization_msgs::Marker::ADD;
+        sonar_pose_marker.type = visualization_msgs::msg::Marker::ARROW;
+        sonar_pose_marker.action = visualization_msgs::msg::Marker::ADD;
         sonar_pose_marker.pose.position.x = T_s0_si.translation().x();
         sonar_pose_marker.pose.position.y = T_s0_si.translation().y();
         sonar_pose_marker.pose.position.z = T_s0_si.translation().z();
@@ -259,7 +271,7 @@ int main(int argc, char** argv)
 
     }
 
-    visualization_msgs::MarkerArray markers_odom_pose;
+    visualization_msgs::msg::MarkerArray markers_odom_pose;
     id = 0;
     for(auto it:poses_odom){
         double time = it.first;
@@ -268,13 +280,13 @@ int main(int argc, char** argv)
         }
         Eigen::Isometry3d T_e0_ei = it.second;
         Eigen::Quaterniond q_e0_ei(T_e0_ei.rotation());
-        visualization_msgs::Marker sonar_pose_marker;
+        visualization_msgs::msg::Marker sonar_pose_marker;
         sonar_pose_marker.header.frame_id = "map";
-        sonar_pose_marker.header.stamp = ros::Time::now();
+        sonar_pose_marker.header.stamp = node->now();
         sonar_pose_marker.ns = "odom_pose";
         sonar_pose_marker.id = id;
-        sonar_pose_marker.type = visualization_msgs::Marker::ARROW;
-        sonar_pose_marker.action = visualization_msgs::Marker::ADD;
+        sonar_pose_marker.type = visualization_msgs::msg::Marker::ARROW;
+        sonar_pose_marker.action = visualization_msgs::msg::Marker::ADD;
         sonar_pose_marker.pose.position.x = T_e0_ei.translation().x();
         sonar_pose_marker.pose.position.y = T_e0_ei.translation().y();
         sonar_pose_marker.pose.position.z = T_e0_ei.translation().z();
@@ -294,19 +306,19 @@ int main(int argc, char** argv)
 
     }
 
-    visualization_msgs::MarkerArray markers_sonar_pose_opt;
+    visualization_msgs::msg::MarkerArray markers_sonar_pose_opt;
     id = 0;
     for(auto it:poses_sonar){
         Eigen::Isometry3d T_s0_si = it.second;
         Eigen::Isometry3d T_e0_ei = T_e_s * T_s0_si * T_e_s.inverse();
         Eigen::Quaterniond q_e0_ei(T_e0_ei.rotation());
-        visualization_msgs::Marker sonar_pose_marker;
+        visualization_msgs::msg::Marker sonar_pose_marker;
         sonar_pose_marker.header.frame_id = "map";
-        sonar_pose_marker.header.stamp = ros::Time::now();
+        sonar_pose_marker.header.stamp = node->now();
         sonar_pose_marker.ns = "sonar_pose";
         sonar_pose_marker.id = id;
-        sonar_pose_marker.type = visualization_msgs::Marker::ARROW;
-        sonar_pose_marker.action = visualization_msgs::Marker::ADD;
+        sonar_pose_marker.type = visualization_msgs::msg::Marker::ARROW;
+        sonar_pose_marker.action = visualization_msgs::msg::Marker::ADD;
         sonar_pose_marker.pose.position.x = T_e0_ei.translation().x();
         sonar_pose_marker.pose.position.y = T_e0_ei.translation().y();
         sonar_pose_marker.pose.position.z = T_e0_ei.translation().z();
@@ -326,21 +338,23 @@ int main(int argc, char** argv)
 
     }
 
-    ros::Publisher pub_sonar_pose = nh.advertise<visualization_msgs::MarkerArray>("sonar_pose_marker", 100);
-    ros::Publisher pub_odom_pose = nh.advertise<visualization_msgs::MarkerArray>("odom_pose_marker", 100);
-    ros::Publisher pub_odom_pose2 = nh.advertise<visualization_msgs::MarkerArray>("sonar_pose_opt_marker", 100);
-    ros::Rate loop_rate(1);
-    while(ros::ok()){
-        pub_sonar_pose.publish(markers_sonar_pose);
-        pub_odom_pose.publish(markers_odom_pose);
-        pub_odom_pose2.publish(markers_sonar_pose_opt);
-        ros::spinOnce();
+    auto pub_sonar_pose = node->create_publisher<visualization_msgs::msg::MarkerArray>("sonar_pose_marker", rclcpp::QoS(100));
+    auto pub_odom_pose = node->create_publisher<visualization_msgs::msg::MarkerArray>("odom_pose_marker", rclcpp::QoS(100));
+    auto pub_odom_pose2 = node->create_publisher<visualization_msgs::msg::MarkerArray>("sonar_pose_opt_marker", rclcpp::QoS(100));
+    rclcpp::Rate loop_rate(1.0);
+    while (rclcpp::ok()) {
+        pub_sonar_pose->publish(markers_sonar_pose);
+        pub_odom_pose->publish(markers_odom_pose);
+        pub_odom_pose2->publish(markers_sonar_pose_opt);
+        rclcpp::spin_some(node);
         loop_rate.sleep();
     }
 
 
 
 
+
+    rclcpp::shutdown();
 
     return 0;
 }

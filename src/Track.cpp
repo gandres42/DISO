@@ -7,14 +7,15 @@
 #include "OptimizationType.h"
 #include "MapPoint.h"
 #include "LocalMapping.h"
-#include <cv_bridge.h>
-#include <ros/ros.h>
-#include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
-#include <sensor_msgs/Image.h>
-#include <geometry_msgs/PoseStamped.h>
-#include <nav_msgs/Path.h>
+#include <cv_bridge/cv_bridge.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <cmath>
+#include <iomanip>
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include "opencv2/imgproc.hpp"
@@ -25,24 +26,29 @@
 using namespace nanoflann;
 using namespace std;
 
-Track::Track(double range, double fov, int pyramid_layer, int loss_threshold, double gradient_threshold,
-             Eigen::Isometry3d &T_b_s) : mRange(range), mFOV(fov), mPyramidLayer(pyramid_layer),
+Track::Track(rclcpp::Node* node, double range, double fov, int pyramid_layer, int loss_threshold,
+             double gradient_threshold,
+             Eigen::Isometry3d &T_b_s) : mpNode(node), mRange(range), mFOV(fov),
+                                         mPyramidLayer(pyramid_layer),
                                          mT_b_s(T_b_s), mLossThreshold(loss_threshold),
                                          mGradientInlierThreshold(gradient_threshold)
 {
-    ros::NodeHandle nh;
-    mImagePub = nh.advertise<sensor_msgs::Image>("/direct_sonar/image", 10);
-    mPosePub = nh.advertise<geometry_msgs::PoseStamped>("/direct_sonar/pose", 10);
-    mPathPub = nh.advertise<nav_msgs::Path>("/direct_sonar/path", 10);
-    mOdomPub = nh.advertise<geometry_msgs::PoseStamped>("/direct_sonar/odom", 10);
-    mOdomPathPub = nh.advertise<nav_msgs::Path>("/direct_sonar/odom_path", 10);
+    mImagePub = mpNode->create_publisher<sensor_msgs::msg::Image>("/direct_sonar/image",
+                                                                 rclcpp::QoS(10));
+    mPosePub = mpNode->create_publisher<geometry_msgs::msg::PoseStamped>("/direct_sonar/pose",
+                                                                        rclcpp::QoS(10));
+    mPathPub = mpNode->create_publisher<nav_msgs::msg::Path>("/direct_sonar/path", rclcpp::QoS(10));
+    mOdomPub = mpNode->create_publisher<geometry_msgs::msg::PoseStamped>("/direct_sonar/odom",
+                                                                        rclcpp::QoS(10));
+    mOdomPathPub = mpNode->create_publisher<nav_msgs::msg::Path>("/direct_sonar/odom_path",
+                                                                 rclcpp::QoS(10));
 }
 
 void Track::TrackFrame2Frame(const Frame &f)
 {
     mpCurrentFrame = make_shared<Frame>(f);
     if (!mpLastFrame) {
-        ROS_INFO_STREAM("mpLastFrame is empty");
+        RCLCPP_INFO_STREAM(mpNode->get_logger(), "mpLastFrame is empty");
         mPath.insert(make_pair(mpCurrentFrame->mTimestamp, mT_w_sj));
         mOdomPath.insert(make_pair(mpCurrentFrame->mTimestamp, mpCurrentFrame->GetOdomPose()));
         mpLastFrame = mpCurrentFrame;
@@ -63,7 +69,7 @@ void Track::TrackFrame2Frame(const Frame &f)
     mPath.insert(make_pair(mpCurrentFrame->mTimestamp, mT_w_sj));
     mOdomPath.insert(make_pair(mpCurrentFrame->mTimestamp, mpCurrentFrame->GetOdomPose()));
     mpLastFrame = mpCurrentFrame;
-    SavePath("");
+    SavePath();
 }
 
 Eigen::Isometry3d Track::TrackFrame(const Frame &f)
@@ -71,19 +77,19 @@ Eigen::Isometry3d Track::TrackFrame(const Frame &f)
     unique_lock<shared_mutex> lock(mStateMutex);
     mState->TrackFrame(f);
     mState = make_shared<TrackUpToDate>(shared_from_this());
-    ROS_INFO_STREAM("Frame[" << mpCurrentFrame->mID << "]" << " inlier: "
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "Frame[" << mpCurrentFrame->mID << "]" << " inlier: "
                              << mpCurrentFrame->GetObservationsF2L().size());
     return mpCurrentFrame->GetPose();
 }
 
 void Track::TrackFromLastFrame(const Frame &f)
 {
-    ROS_INFO_STREAM("TrackFromLastFrame");
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "TrackFromLastFrame");
     unique_lock<shared_mutex> lock(mTrackMutex);
     mpCurrentFrame = make_shared<Frame>(f);
     //first frame
     if (!mpLastFrame) {
-        ROS_INFO_STREAM("mpLastFrame is empty");
+        RCLCPP_INFO_STREAM(mpNode->get_logger(), "mpLastFrame is empty");
         mpCurrentFrame->SetPose(Eigen::Isometry3d::Identity());
         mpCurrentFrame->mInliers = mpCurrentFrame->mKeyPoints;
         InitializeMap();
@@ -136,7 +142,7 @@ void Track::TrackFromLastFrame(const Frame &f)
         pF->mInliers = inliers_last;
         mpCurrentFrame->mInliers = inliers_cur;
         BuildAssociation(pF, mpCurrentFrame, association, mLossThreshold);
-        // ROS_INFO_STREAM(
+        // RCLCPP_INFO_STREAM(mpNode->get_logger(),
         //         "tracked points: " << mpCurrentFrame->GetObservationsF2L().size() << " from Frame: "
         //                            << pF->mID);
         if (mpCurrentFrame->GetObservationsF2L().size() >= mLossThreshold || window_index > 2) {
@@ -156,7 +162,7 @@ void Track::TrackFromLastFrame(const Frame &f)
     }
     mpLastFrame = mpCurrentFrame;
     // mPath.insert(make_pair(mpCurrentFrame->mTimestamp, mpCurrentFrame->GetPose()));
-    // SavePath("");
+    // SavePath();
     DrawTrack();
     PublishPose();
 
@@ -164,12 +170,12 @@ void Track::TrackFromLastFrame(const Frame &f)
 
 void Track::TrackFromWindow(const Frame &f)
 {
-    ROS_INFO_STREAM("TrackFromWindow");
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "TrackFromWindow");
     unique_lock<shared_mutex> lock(mTrackMutex);
     mpCurrentFrame = make_shared<Frame>(f);
     mpLastFrame = mpLocalMaper->GetLastFrameInWindow();
     if (!mpLastFrame) {
-        ROS_INFO_STREAM("mpLastFrame is empty");
+        RCLCPP_INFO_STREAM(mpNode->get_logger(), "mpLastFrame is empty");
         mpCurrentFrame->SetPose(Eigen::Isometry3d::Identity());
         mpCurrentFrame->mInliers = mpCurrentFrame->mKeyPoints;
         InitializeMap();
@@ -215,7 +221,7 @@ void Track::TrackFromWindow(const Frame &f)
         pF->mInliers = inliers_last;
         mpCurrentFrame->mInliers = inliers_cur;
         BuildAssociation(pF, mpCurrentFrame, association, mLossThreshold);
-        // ROS_INFO_STREAM(
+        // RCLCPP_INFO_STREAM(mpNode->get_logger(),
         //         "tracked points: " << mpCurrentFrame->GetObservationsF2L().size() << " from Frame: "
         //                            << pF->mID);
         if (mpCurrentFrame->GetObservationsF2L().size() >= mLossThreshold || window_index > 2) {
@@ -235,7 +241,7 @@ void Track::TrackFromWindow(const Frame &f)
     }
     mPath.insert(make_pair(mpCurrentFrame->mTimestamp, mpCurrentFrame->GetPose()));
     mOdomPath.insert(make_pair(mpCurrentFrame->mTimestamp, mpCurrentFrame->GetOdomPose()));
-    SavePath("");
+    SavePath();
     mpLastFrame = mpCurrentFrame;
     DrawTrack();
     PublishPose();
@@ -261,11 +267,11 @@ bool Track::PoseEstimationFrame2Frame(cv::Mat &pre_img, cv::Mat &img, Eigen::Iso
 
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(false);
@@ -301,25 +307,30 @@ bool Track::PoseEstimationFrame2Frame(cv::Mat &pre_img, cv::Mat &img, Eigen::Iso
         all_edges.push_back(edge);
     }
     // cout << "edges in graph: " << optimizer.edges().size() << endl;
-    // ROS_INFO_STREAM("edges in graph: " << optimizer.edges().size());
+    // RCLCPP_INFO_STREAM(mpNode->get_logger(), "edges in graph: " << optimizer.edges().size());
 
     optimizer.initializeOptimization();
     optimizer.optimize(100);
     //save edge chi2 to file
+    const bool dump = !mDebugDir.empty();
     ofstream f_chi2;
-    f_chi2.open(
-            "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/debug/opt_frame2frame.txt",
-            ios::out);
+    if (dump) {
+        f_chi2.open(mDebugDir + "/opt_frame2frame.txt", ios::out);
+    }
     for (auto e: all_edges) {
         e->computeError();
-        f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        if (dump) {
+            f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        }
         if (e->error().norm() > mGradientInlierThreshold || (e->error().norm() == 0)) {
             //remove from id_pixel
             id_pixel.erase(e->id());
         }
     }
-    // ROS_INFO_STREAM("inlier number: " << id_pixel.size());
-    f_chi2.close();
+    // RCLCPP_INFO_STREAM(mpNode->get_logger(), "inlier number: " << id_pixel.size());
+    if (dump) {
+        f_chi2.close();
+    }
 
     inliers_last.clear();
     for (auto it: id_pixel) {
@@ -385,9 +396,9 @@ bool Track::PoseEstimationFrame2Frame(cv::Mat &pre_img, cv::Mat &img, Eigen::Iso
     //
     //     }
     //     //get ros time
-    //     auto t = ros::Time::now();
+    //     auto t = mpNode->now();
     //     stringstream ss;
-    //     ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/"
+    //     ss << mDebugDir << "/"
     //        << mpLastFrame->mID << "_" << mpCurrentFrame->mID << ".png";
     //     // cv::imshow("result", img_show);
     //     // cv::waitKey(0);
@@ -421,11 +432,11 @@ void Track::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_ptr<Fram
 
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(false);
@@ -461,7 +472,7 @@ void Track::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_ptr<Fram
         all_edges.push_back(edge);
     }
     // cout << "edges in graph: " << optimizer.edges().size() << endl;
-    // ROS_INFO_STREAM("edges in graph: " << optimizer.edges().size());
+    // RCLCPP_INFO_STREAM(mpNode->get_logger(), "edges in graph: " << optimizer.edges().size());
 
     optimizer.initializeOptimization();
     optimizer.optimize(100);
@@ -479,20 +490,26 @@ void Track::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_ptr<Fram
 
 
     //save edge chi2 to file
+    const bool dump = !mDebugDir.empty();
     ofstream f_chi2;
-    f_chi2.open("/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/debug/opt.txt",
-                ios::out);
+    if (dump) {
+        f_chi2.open(mDebugDir + "/opt.txt", ios::out);
+    }
 
     for (auto e: all_edges) {
         // e->computeError();
-        f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        if (dump) {
+            f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        }
         if (e->error().norm() > mGradientInlierThreshold || (e->error().norm() == 0)) {
             //remove from id_pixel
             id_pixel.erase(e->id());
         }
     }
-    // ROS_INFO_STREAM("inlier number: " << id_pixel.size());
-    f_chi2.close();
+    // RCLCPP_INFO_STREAM(mpNode->get_logger(), "inlier number: " << id_pixel.size());
+    if (dump) {
+        f_chi2.close();
+    }
 
     inliers_last.clear();
     for (auto it: id_pixel) {
@@ -553,9 +570,9 @@ void Track::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_ptr<Fram
     //
     // }
     // //get ros time
-    // auto t = ros::Time::now();
+    // auto t = mpNode->now();
     // stringstream ss;
-    // ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/WINDOW_" << pF->mID
+    // ss << mDebugDir << "/WINDOW_" << pF->mID
     //    << "_" << pF_pre->mID << ".png";
     // // cv::imshow("result", img_show);
     // // cv::waitKey(0);
@@ -601,58 +618,72 @@ void Track::PoseEstimationWindow2FramePyramid(shared_ptr<Frame> pF_pre, shared_p
     // cout << "rotation axis: " << a.axis().transpose() << " angle: " << a.angle() << endl;
 
     // plot the feature points
-    cv::Mat img_show(pF->mImg.rows * 2, pF->mImg.cols * 2, CV_8UC3);
-    pF_pre->mImg.copyTo(img_show(cv::Rect(0, 0, pF->mImg.cols, pF->mImg.rows)));
-    pF->mImg.copyTo(img_show(cv::Rect(0, pF->mImg.rows, pF->mImg.cols, pF->mImg.rows)));
+    if (!mDebugDir.empty()) {
+        cv::Mat img_show(pF->mImg.rows * 2, pF->mImg.cols * 2, CV_8UC3);
+        pF_pre->mImg.copyTo(img_show(cv::Rect(0, 0, pF->mImg.cols, pF->mImg.rows)));
+        pF->mImg.copyTo(img_show(cv::Rect(0, pF->mImg.rows, pF->mImg.cols, pF->mImg.rows)));
 
-    pF_pre->mImg.copyTo(img_show(cv::Rect(pF->mImg.cols, 0, pF->mImg.cols, pF->mImg.rows)));
-    pF->mImg.copyTo(img_show(cv::Rect(pF->mImg.cols, pF->mImg.rows, pF->mImg.cols, pF->mImg.rows)));
+        pF_pre->mImg.copyTo(img_show(cv::Rect(pF->mImg.cols, 0, pF->mImg.cols, pF->mImg.rows)));
+        pF->mImg.copyTo(img_show(cv::Rect(pF->mImg.cols, pF->mImg.rows, pF->mImg.cols, pF->mImg.rows)));
 
-    for (auto it: inliers_last) {
-        Eigen::Vector2d p_pixel(it.first, it.second);
-        Eigen::Vector3d p = sonar2Dto3D(p_pixel, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
-        // Eigen::Vector3d p = m.pos_world;
-        Eigen::Vector2d pixel_prev = sonar3Dto2D(p, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
-        Eigen::Vector3d p2 = T_sj_si * p;
-        Eigen::Vector2d pixel_now = sonar3Dto2D(p2, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
-        if (pixel_now(0, 0) < 0 || pixel_now(0, 0) >= pF->mImg.cols || pixel_now(1, 0) < 0 ||
-            pixel_now(1, 0) >= pF->mImg.rows) {
-            continue;
+        for (auto it: inliers_last) {
+            Eigen::Vector2d p_pixel(it.first, it.second);
+            Eigen::Vector3d p = sonar2Dto3D(p_pixel, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
+            // Eigen::Vector3d p = m.pos_world;
+            Eigen::Vector2d pixel_prev = sonar3Dto2D(p, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
+            Eigen::Vector3d p2 = T_sj_si * p;
+            Eigen::Vector2d pixel_now = sonar3Dto2D(p2, pF->mTheta, pF->mTx, pF->mTy, pF->mScale);
+            if (pixel_now(0, 0) < 0 || pixel_now(0, 0) >= pF->mImg.cols || pixel_now(1, 0) < 0 ||
+                pixel_now(1, 0) >= pF->mImg.rows) {
+                continue;
+            }
+
+            float b = 0;
+            float g = 250;
+            float r = 0;
+            img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3] = b;
+            img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3 + 1] = g;
+            img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3 + 2] = r;
+
+            img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3] = b;
+            img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3 + 1] = g;
+            img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3 + 2] = r;
+            cv::circle(img_show, cv::Point2d(pixel_prev(0, 0), pixel_prev(1, 0)), 2, cv::Scalar(b, g, r), 1);
+            cv::circle(img_show, cv::Point2d(pixel_now(0, 0), pixel_now(1, 0) + pF->mImg.rows), 2,
+                       cv::Scalar(b, g, r), 1);
+
         }
-
-        float b = 0;
-        float g = 250;
-        float r = 0;
-        img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3] = b;
-        img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3 + 1] = g;
-        img_show.ptr<uchar>(pixel_prev(1, 0))[int(pixel_prev(0, 0)) * 3 + 2] = r;
-
-        img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3] = b;
-        img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3 + 1] = g;
-        img_show.ptr<uchar>(pixel_now(1, 0) + pF->mImg.rows)[int(pixel_now(0, 0)) * 3 + 2] = r;
-        cv::circle(img_show, cv::Point2d(pixel_prev(0, 0), pixel_prev(1, 0)), 2, cv::Scalar(b, g, r), 1);
-        cv::circle(img_show, cv::Point2d(pixel_now(0, 0), pixel_now(1, 0) + pF->mImg.rows), 2,
-                   cv::Scalar(b, g, r), 1);
-
+        //get ros time
+        auto t = mpNode->now();
+        (void) t;
+        stringstream ss;
+        ss << mDebugDir << "/WINDOW_" << pF->mID
+           << "_" << pF_pre->mID << ".png";
+        // cv::imshow("result", img_show);
+        // cv::waitKey(0);
+        cv::imwrite(ss.str(), img_show);
     }
-    //get ros time
-    auto t = ros::Time::now();
-    stringstream ss;
-    ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/WINDOW_" << pF->mID
-       << "_" << pF_pre->mID << ".png";
-    // cv::imshow("result", img_show);
-    // cv::waitKey(0);
-    cv::imwrite(ss.str(), img_show);
 
 
 }
 
-void Track::SavePath(string file_path)
+void Track::SetOutputConfig(const std::string &output_dir, const std::string &debug_dir)
 {
+    mOutputDir = output_dir;
+    mDebugDir = debug_dir;
+}
+
+void Track::SavePath(bool force)
+{
+    if (mOutputDir.empty()) {
+        return;
+    }
+    // the original rewrote the whole file every frame, rate limit it
+    if (!force && (++mSavePathCounter % 100) != 0) {
+        return;
+    }
     std::ofstream outfile;
-    outfile.open(
-            "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_traj_estimate.txt",
-            std::ios_base::out);
+    outfile.open(mOutputDir + "/stamped_traj_estimate.txt", std::ios_base::out);
     outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
     for (auto s_p: mPath) {
         Eigen::Isometry3d T_s0_si = s_p.second;
@@ -665,7 +696,7 @@ void Track::SavePath(string file_path)
     outfile.close();
 
     // stringstream ss;
-    // ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/debug/"
+    // ss << mDebugDir << "/"
     //    << mActiveFrameWindow.size() << "_" << mActiveFrameWindow.front()->mID << "_obs.txt";
     // outfile.open(ss.str(), std::ios_base::out);
     // auto obs_f2l = mActiveFrameWindow.front()->GetObservationsF2L();
@@ -712,7 +743,7 @@ void BuildAssociation(shared_ptr<Frame> pF_last, shared_ptr<Frame> pF_cur,
                       map<pair<double, double>, pair<double, double>> &association, int loss_threshold)
 {
     if (pF_cur->GetObservationsF2L().size() + association.size() < loss_threshold || association.size()<20) {
-        ROS_INFO_STREAM(
+        RCLCPP_INFO_STREAM(rclcpp::get_logger("diso"),
                 "skip association, too few inlier: Frame" << pF_last->mID << "-> Frame" << pF_cur->mID);
         return;
     }
@@ -766,10 +797,11 @@ void IncreaseMapPoints(shared_ptr<Frame> pF)
 
         }
         // else {
-        //     ROS_INFO_STREAM("reject new point distance: " << sqrt(out_dist_sqr));
+        //     RCLCPP_INFO_STREAM(rclcpp::get_logger("diso"), "reject new point distance: " << sqrt(out_dist_sqr));
         // }
     }
-    ROS_INFO_STREAM("increase map points: " << increase_num << "from Frame:" << pF->mID);
+    RCLCPP_INFO_STREAM(rclcpp::get_logger("diso"),
+                       "increase map points: " << increase_num << "from Frame:" << pF->mID);
 
 
 }
@@ -810,16 +842,16 @@ void Track::DrawTrack()
     //show image
     // cv::imshow("track", out);
     stringstream ss;
-    ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/Track_"
+    ss << mDebugDir << "/Track_"
        << mpCurrentFrame->mID << ".png";
     // cv::imwrite(ss.str(), out);
     //publish image
     cv_bridge::CvImage cvImage;
-    cvImage.header.stamp = ros::Time::now();
+    cvImage.header.stamp = mpNode->now();
     cvImage.header.frame_id = "map";
     cvImage.encoding = "bgr8";
     cvImage.image = out;
-    mImagePub.publish(cvImage.toImageMsg());
+    mImagePub->publish(*cvImage.toImageMsg());
     // cv::waitKey(1);
 }
 
@@ -850,8 +882,8 @@ void Track::PublishPose()
 {
     Eigen::Isometry3d T_s0_si = mpCurrentFrame->GetPose();
     Eigen::Isometry3d T_b0_bi = mT_b_s * T_s0_si * mT_b_s.inverse();
-    geometry_msgs::PoseStamped pose;
-    pose.header.stamp = ros::Time::now();
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp = mpNode->now();
     pose.header.frame_id = "map";
     pose.pose.position.x = T_b0_bi.translation().x();
     pose.pose.position.y = T_b0_bi.translation().y();
@@ -862,9 +894,9 @@ void Track::PublishPose()
     pose.pose.orientation.z = q.z();
     pose.pose.orientation.w = q.w();
 
-    mPosePub.publish(pose);
+    mPosePub->publish(pose);
 
-    nav_msgs::Path path;
+    nav_msgs::msg::Path path;
     path.header = pose.header;
     for (auto time_pose: mPath) {
         T_s0_si = time_pose.second;
@@ -879,7 +911,7 @@ void Track::PublishPose()
         pose.pose.orientation.w = q.w();
         path.poses.push_back(pose);
     }
-    mPathPub.publish(path);
+    mPathPub->publish(path);
 
     T_b0_bi = mpCurrentFrame->GetOdomPose();
     pose.pose.position.x = T_b0_bi.translation().x();
@@ -890,7 +922,7 @@ void Track::PublishPose()
     pose.pose.orientation.y = q.y();
     pose.pose.orientation.z = q.z();
     pose.pose.orientation.w = q.w();
-    mOdomPub.publish(pose);
+    mOdomPub->publish(pose);
 
     path.poses.clear();
     for (auto time_pose: mOdomPath) {
@@ -905,7 +937,7 @@ void Track::PublishPose()
         pose.pose.orientation.w = q.w();
         path.poses.push_back(pose);
     }
-    mOdomPathPub.publish(path);
+    mOdomPathPub->publish(path);
 
 
 }
@@ -925,7 +957,7 @@ void Track::Reset(shared_ptr<Frame> f_pre)
     mpLocalMaper->Reset();
     mpLocalMaper->InsertKeyFrame(mpCurrentFrame);
     mpLastFrame = mpCurrentFrame;
-    ROS_INFO_STREAM("Reset Done");
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "Reset Done");
     return;
 }
 

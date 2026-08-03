@@ -6,21 +6,51 @@
 #include "Frame.h"
 #include "Track.h"
 #include "LocalMapping.h"
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <pcl_conversions/pcl_conversions.h>
-#include <pcl-1.10/pcl/point_cloud.h>
-#include <pcl-1.10/pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
 #include <opencv2/core/core.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <thread>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
+#include <memory>
+#include <stdexcept>
+#include <cstdlib>
+#include <string>
 
-System::System(const string &strSettingFile)
+System::System(const std::string &strSettingFile)
+        : rclcpp::Node("direct_sonar_odometry")
 {
-    cv::FileStorage fsSettings(strSettingFile.c_str(), cv::FileStorage::READ);
+    std::string settings = declare_parameter<std::string>("settings_file", strSettingFile);
+    if (settings.empty()) { settings = strSettingFile; }
+    mOutputDir = declare_parameter<std::string>("output_dir", std::string(""));
+    mDebugDir = declare_parameter<std::string>("debug_dir", std::string(""));
+    mImageTransport = declare_parameter<std::string>("image_transport", std::string("compressed"));
+
+    if (settings.empty()) {
+        RCLCPP_ERROR_STREAM(get_logger(),
+                            "No settings file given. Pass one as the first command line argument "
+                            "or set the 'settings_file' parameter.");
+        throw std::runtime_error("direct_sonar_odometry: no settings file given");
+    }
+
+    if (!mOutputDir.empty()) {
+        std::filesystem::create_directories(mOutputDir);
+        RCLCPP_INFO_STREAM(get_logger(), "Output directory: " << mOutputDir);
+    }
+    if (!mDebugDir.empty()) {
+        std::filesystem::create_directories(mDebugDir);
+        RCLCPP_INFO_STREAM(get_logger(), "Debug directory: " << mDebugDir);
+    }
+
+    cv::FileStorage fsSettings(settings.c_str(), cv::FileStorage::READ);
     if (!fsSettings.isOpened()) {
-        ROS_ERROR_STREAM("Failed to open settings file at: " << strSettingFile << endl);
+        RCLCPP_ERROR_STREAM(get_logger(), "Failed to open settings file at: " << settings);
         exit(-1);
     }
 
@@ -38,58 +68,73 @@ System::System(const string &strSettingFile)
     if (!node.empty()) {
         Tbs = node.mat();
         if (Tbs.rows != 4 || Tbs.cols != 4) {
-            ROS_ERROR_STREAM("Tbs matrix have to be a 4x4 transformation matrix");
+            RCLCPP_ERROR_STREAM(get_logger(), "Tbs matrix have to be a 4x4 transformation matrix");
             exit(-1);
         }
     }
     else {
-        ROS_ERROR_STREAM("Tbs matrix doesn't exist");
+        RCLCPP_ERROR_STREAM(get_logger(), "Tbs matrix doesn't exist");
         exit(-1);
     }
     cv::cv2eigen(Tbs, mT_b_s.matrix());
 
-    ROS_INFO_STREAM("SonarTopic: " << mSonarTopic << endl);
-    ROS_INFO_STREAM("OdomTopic: " << mOdomTopic << endl);
-    ROS_INFO_STREAM("Range: " << mRange << endl);
-    ROS_INFO_STREAM("GradientThreshold: " << mGradientThreshold << endl);
-    ROS_INFO_STREAM("PyramidLayer: " << mPyramidLayer << endl);
-    ROS_INFO_STREAM("FOV: " << 180 * mFOV / M_PI << endl);
-    ROS_INFO_STREAM("LossThreshold: " << loss_threshold << endl);
-    ROS_INFO_STREAM("GradientInlierThreshold: " << gradient_inlier_threshold << endl);
-    ROS_INFO_STREAM("Tbs: \n" << fixed << setprecision(9) << Tbs << endl);
+    RCLCPP_INFO_STREAM(get_logger(), "SonarTopic: " << mSonarTopic);
+    RCLCPP_INFO_STREAM(get_logger(), "OdomTopic: " << mOdomTopic);
+    RCLCPP_INFO_STREAM(get_logger(), "Range: " << mRange);
+    RCLCPP_INFO_STREAM(get_logger(), "GradientThreshold: " << mGradientThreshold);
+    RCLCPP_INFO_STREAM(get_logger(), "PyramidLayer: " << mPyramidLayer);
+    RCLCPP_INFO_STREAM(get_logger(), "FOV: " << 180 * mFOV / M_PI);
+    RCLCPP_INFO_STREAM(get_logger(), "LossThreshold: " << loss_threshold);
+    RCLCPP_INFO_STREAM(get_logger(), "GradientInlierThreshold: " << gradient_inlier_threshold);
+    RCLCPP_INFO_STREAM(get_logger(), "Tbs: \n" << fixed << setprecision(9) << Tbs);
 
 
-    mpTracker = make_shared<Track>(mRange, mFOV, mPyramidLayer, loss_threshold,
+    // NOTE: rclcpp::Node declares a static make_shared(), which would hide std::make_shared
+    // here, so these have to be explicitly qualified.
+    mpTracker = std::make_shared<Track>(this, mRange, mFOV, mPyramidLayer, loss_threshold,
                                    gradient_inlier_threshold, mT_b_s);
-    shared_ptr<TrackState> track_state = make_shared<TrackUpToDate>(mpTracker);
+    mpTracker->SetOutputConfig(mOutputDir, mDebugDir);
+    shared_ptr<TrackState> track_state = std::make_shared<TrackUpToDate>(mpTracker);
     mpTracker->SetState(track_state);
 
-    mpLocalMaper = make_shared<LocalMapping>(mpTracker);
+    mpLocalMaper = std::make_shared<LocalMapping>(this, mpTracker);
+    mpLocalMaper->SetDebugDir(mDebugDir);
     mpTracker->SetLocalMaper(mpLocalMaper);
 
     //start new thread
-    mptLocalMaper = make_shared<thread>(&LocalMapping::Run, mpLocalMaper);
+    mptLocalMaper = std::make_shared<thread>(&LocalMapping::Run, mpLocalMaper);
 
     mT_bw_b0 = Eigen::Isometry3d::Identity();
     // mOdom_Path.reserve(10000);
 
-    ros::NodeHandle nh;
-    mSonarPosePub = nh.advertise<geometry_msgs::PoseStamped>("/direct_sonar/pose_draw", 10);
-    mOdomPub = nh.advertise<nav_msgs::Odometry>("/direct_sonar/odom_test", 1000);
+    mSonarPosePub = create_publisher<geometry_msgs::msg::PoseStamped>("/direct_sonar/pose_draw",
+                                                                     rclcpp::QoS(10));
+    mOdomPub = create_publisher<nav_msgs::msg::Odometry>("/direct_sonar/odom_test",
+                                                        rclcpp::QoS(1000));
 
 
-    mPointCloudPub = nh.advertise<sensor_msgs::PointCloud2>("/direct_sonar/point_cloud", 1);
+    mPointCloudPub = create_publisher<sensor_msgs::msg::PointCloud2>("/direct_sonar/point_cloud",
+                                                                    rclcpp::QoS(1));
 
+    m_tb = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
 }
 
-void System::frameLoad(const sensor_msgs::ImageConstPtr &image_msg,
-                       const geometry_msgs::PoseStamped::ConstPtr &odom_msg)
+System::~System()
+{
+    if (mpLocalMaper) { mpLocalMaper->RequestStop(); }
+    if (mptLocalMaper && mptLocalMaper->joinable()) { mptLocalMaper->join(); }
+    Save(true);
+    if (mpTracker) { mpTracker->SavePath(true); }
+}
+
+void System::frameLoad(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg,
+                       const geometry_msgs::msg::PoseStamped::ConstSharedPtr &odom_msg)
 {
     Eigen::Vector3d t(odom_msg->pose.position.y, odom_msg->pose.position.x, odom_msg->pose.position.z);
     Eigen::Quaterniond q(odom_msg->pose.orientation.w, odom_msg->pose.orientation.x,
                          odom_msg->pose.orientation.y, odom_msg->pose.orientation.z);
-    double time = image_msg->header.stamp.toSec();
+    double time = rclcpp::Time(image_msg->header.stamp).seconds();
     Eigen::Isometry3d I = Eigen::Isometry3d::Identity();
     if (mT_bw_b0.matrix() == I.matrix()) {
         mT_bw_b0.setIdentity();
@@ -109,11 +154,11 @@ void System::frameLoad(const sensor_msgs::ImageConstPtr &image_msg,
     cv::Mat img = cv_bridge::toCvShare(image_msg, "bgr8")->image;
     cv::Mat down;
     cv::pyrDown(img, down, cv::Size(img.cols / 2, img.rows / 2));
-    // Frame f(down, image_msg->header.stamp.toSec(), mRange, mFOV, mPyramidLayer, mGradientThreshold);
-    Frame f(down, image_msg->header.stamp.toSec(), mRange, mFOV, T_b0_bi, mPyramidLayer,
+    // Frame f(down, rclcpp::Time(image_msg->header.stamp).seconds(), mRange, mFOV, mPyramidLayer, mGradientThreshold);
+    Frame f(down, rclcpp::Time(image_msg->header.stamp).seconds(), mRange, mFOV, T_b0_bi, mPyramidLayer,
             mGradientThreshold);
     ExtracPointCloud(down, time, f.mTheta, f.mTx, f.mTy, f.mScale);
-    nav_msgs::Odometry odom_test;
+    nav_msgs::msg::Odometry odom_test;
     q = Eigen::Quaterniond(T_b0_bi.rotation());
     t = T_b0_bi.translation();
     odom_test.header.stamp = image_msg->header.stamp;
@@ -126,15 +171,15 @@ void System::frameLoad(const sensor_msgs::ImageConstPtr &image_msg,
     odom_test.pose.pose.orientation.y = q.y();
     odom_test.pose.pose.orientation.z = q.z();
     odom_test.pose.pose.orientation.w = q.w();
-    mOdomPub.publish(odom_test);
+    mOdomPub->publish(odom_test);
     BroadcastTF(T_b0_bi,image_msg->header.stamp,"odom","base_link");
     // mTracker->TrackFrame2Frame(f);
     Eigen::Isometry3d T_s0_si = mpTracker->TrackFrame(f);
 
     Eigen::Isometry3d T_bw_bi_sonar = mT_bw_b0 * mT_b_s * T_s0_si * mT_b_s.inverse();
 
-    geometry_msgs::PoseStamped pose;
-    pose.header.stamp = ros::Time::now();
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp = now();
     pose.header.frame_id = "map";
     pose.pose.position.x = T_bw_bi_sonar.translation().x();
     pose.pose.position.y = T_bw_bi_sonar.translation().y();
@@ -144,40 +189,40 @@ void System::frameLoad(const sensor_msgs::ImageConstPtr &image_msg,
     pose.pose.orientation.y = q.y();
     pose.pose.orientation.z = q.z();
     pose.pose.orientation.w = q.w();
-    mSonarPosePub.publish(pose);
+    mSonarPosePub->publish(pose);
 
 }
 
 void System::runRos()
 {
-    ros::NodeHandle nh;
-    image_transport::ImageTransport it(nh);
-    image_transport::SubscriberFilter image_sub(it, mSonarTopic, 100,
-                                                image_transport::TransportHints("compressed"));
-    message_filters::Subscriber<geometry_msgs::PoseStamped> odom_sub(nh, mOdomTopic, 100);
-    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, geometry_msgs::PoseStamped> MySyncPolicy;
-    message_filters::Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), image_sub, odom_sub);
-    sync.registerCallback(boost::bind(&System::frameLoad, this, _1, _2));
+    mImageSub.subscribe(*this, mSonarTopic, mImageTransport, rclcpp::QoS(100));
+    mOdomSub.subscribe(this, mOdomTopic, rclcpp::QoS(100));
+    mSync = std::make_shared<message_filters::Synchronizer<MySyncPolicy>>(
+            MySyncPolicy(10), mImageSub, mOdomSub);
+    mSync->registerCallback(std::bind(&System::frameLoad, this,
+                                      std::placeholders::_1, std::placeholders::_2));
 
 
 
-    // image_transport::SubscriberFilter image_sub2(it, mSonarTopic, 100);
-    // message_filters::Subscriber<nav_msgs::Odometry> odom_sub2(nh, mOdomTopic, 100);
-    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, nav_msgs::Odometry> MySyncPolicy2;
-    // message_filters::Synchronizer<MySyncPolicy2> sync2(MySyncPolicy2(10), image_sub2, odom_sub2);
-    // sync2.registerCallback(boost::bind(&System::frameLoad2, this, _1, _2));
-    ros::spin();
+    // image_transport::SubscriberFilter image_sub2;
+    // image_sub2.subscribe(*this, mSonarTopic, mImageTransport, rclcpp::QoS(100));
+    // message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub2;
+    // odom_sub2.subscribe(this, mOdomTopic, rclcpp::QoS(100));
+    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, nav_msgs::msg::Odometry> MySyncPolicy2;
+    // auto sync2 = std::make_shared<message_filters::Synchronizer<MySyncPolicy2>>(MySyncPolicy2(10), image_sub2, odom_sub2);
+    // sync2->registerCallback(std::bind(&System::frameLoad2, this, std::placeholders::_1, std::placeholders::_2));
+    rclcpp::spin(shared_from_this());
 }
 
-void System::frameLoad2(const sensor_msgs::ImageConstPtr &image_msg,
-                        const nav_msgs::Odometry_<allocator<void>>::ConstPtr &odom_msg)
+void System::frameLoad2(const sensor_msgs::msg::Image::ConstSharedPtr &image_msg,
+                        const nav_msgs::msg::Odometry::ConstSharedPtr &odom_msg)
 {
     cv::Mat img = cv_bridge::toCvShare(image_msg, "bgr8")->image;
     Eigen::Vector3d t(odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y,
                       odom_msg->pose.pose.position.z);
     Eigen::Quaterniond q(odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
                          odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z);
-    double time = image_msg->header.stamp.toSec();
+    double time = rclcpp::Time(image_msg->header.stamp).seconds();
     Eigen::Isometry3d I = Eigen::Isometry3d::Identity();
     if (mT_bw_b0.matrix() == I.matrix()) {
         mT_bw_b0.setIdentity();
@@ -192,16 +237,23 @@ void System::frameLoad2(const sensor_msgs::ImageConstPtr &image_msg,
     Eigen::Isometry3d T_b0_bi = mT_bw_b0.inverse() * T_bw_bi;
     mOdom_Path.insert(make_pair(time, T_b0_bi));
     Save();
-    Frame f(img, image_msg->header.stamp.toSec(), mRange, mFOV, mPyramidLayer, mGradientThreshold);
+    Frame f(img, rclcpp::Time(image_msg->header.stamp).seconds(), mRange, mFOV, mPyramidLayer,
+            mGradientThreshold);
     // mTracker->TrackFrame2Frame(f);
     mpTracker->TrackFrame(f);
 }
 
-void System::Save()
+void System::Save(bool force)
 {
+    if (mOutputDir.empty()) {
+        return;
+    }
+    if (!force && (++mSaveCounter % 100) != 0) {
+        return;
+    }
     std::ofstream outfile;
     outfile.open(
-            "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_groundtruth_gt.txt",
+            mOutputDir + "/stamped_groundtruth_gt.txt",
             std::ios_base::out);
     outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
     for (auto time_pose: mOdom_Path) {
@@ -245,29 +297,33 @@ void System::ExtracPointCloud(const cv::Mat &img, double timestamp, double theta
     //     cloud.points.push_back(point);
     //
     // }
-    // ROS_INFO_STREAM("PointCloud Size: "<<cloud.points.size());
-    // sensor_msgs::PointCloud2 pc_msg;
+    // RCLCPP_INFO_STREAM(get_logger(), "PointCloud Size: "<<cloud.points.size());
+    // sensor_msgs::msg::PointCloud2 pc_msg;
     // pcl::toROSMsg(cloud, pc_msg);
     // pc_msg.header.frame_id = "base_link";
-    // ros::Time time;
-    // time.fromSec(timestamp);
+    // rclcpp::Time time(static_cast<int64_t>(timestamp * 1e9));
     // pc_msg.header.stamp = time;
-    // mPointCloudPub.publish(pc_msg);
+    // mPointCloudPub->publish(pc_msg);
 
 
 }
 
 void System::BroadcastTF(const Eigen::Isometry3d &T_c0_cj_orb,
-                              const ros::Time &stamp,
+                              const rclcpp::Time &stamp,
                               const string &id,
                               const string &child_id)
 {
     Eigen::Quaterniond rotation_q(T_c0_cj_orb.rotation());
-    m_tb.sendTransform(
-            tf::StampedTransform(
-                    tf::Transform(tf::Quaternion(rotation_q.x(), rotation_q.y(), rotation_q.z(), rotation_q.w()),
-                                  tf::Vector3(T_c0_cj_orb.translation().x(),
-                                              T_c0_cj_orb.translation().y(),
-                                              T_c0_cj_orb.translation().z())),
-                    stamp, id, child_id));
+    geometry_msgs::msg::TransformStamped tf_msg;
+    tf_msg.header.stamp = stamp;
+    tf_msg.header.frame_id = id;
+    tf_msg.child_frame_id = child_id;
+    tf_msg.transform.translation.x = T_c0_cj_orb.translation().x();
+    tf_msg.transform.translation.y = T_c0_cj_orb.translation().y();
+    tf_msg.transform.translation.z = T_c0_cj_orb.translation().z();
+    tf_msg.transform.rotation.x = rotation_q.x();
+    tf_msg.transform.rotation.y = rotation_q.y();
+    tf_msg.transform.rotation.z = rotation_q.z();
+    tf_msg.transform.rotation.w = rotation_q.w();
+    m_tb->sendTransform(tf_msg);
 }

@@ -4,7 +4,7 @@
 
 #include "MapPoint.h"
 #include "Frame.h"
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 
 int MapPoint::mMapPointNumber = 0;
 

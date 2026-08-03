@@ -43,8 +43,8 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     VertexSonarPose(){}
     VertexSonarPose(const Eigen::Isometry3d& T_si_s0);
-    virtual bool read(std::istream &is){}
-    virtual bool write(std::ostream &os) const{}
+    virtual bool read(std::istream &is){ (void)is; return false; }
+    virtual bool write(std::ostream &os) const{ (void)os; return false; }
     virtual void setToOriginImpl()
     {
         _estimate.setIdentity();
@@ -57,8 +57,8 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     VertexSonarPoint(){}
     VertexSonarPoint(const Eigen::Vector3d& p);
-    virtual bool read(std::istream &is){}
-    virtual bool write(std::ostream &os) const{}
+    virtual bool read(std::istream &is){ (void)is; return false; }
+    virtual bool write(std::ostream &os) const{ (void)os; return false; }
     virtual void setToOriginImpl()
     {
         _estimate.setZero();
@@ -83,9 +83,9 @@ public:
     // virtual void linearizeOplus();
 
     // dummy read and write functions because we don't care...
-    virtual bool read(std::istream &in) {}
+    virtual bool read(std::istream &in) { (void)in; return false; }
 
-    virtual bool write(std::ostream &out) const {}
+    virtual bool write(std::ostream &out) const { (void)out; return false; }
 
 public:
     Eigen::Vector2d x_pixel_;
@@ -118,9 +118,9 @@ public:
     // virtual void linearizeOplus();
 
     // dummy read and write functions because we don't care...
-    virtual bool read(std::istream &in) {}
+    virtual bool read(std::istream &in) { (void)in; return false; }
 
-    virtual bool write(std::ostream &out) const {}
+    virtual bool write(std::ostream &out) const { (void)out; return false; }
 
 public:
     Eigen::Isometry3d mT_si_sj;
@@ -145,9 +145,9 @@ public:
     virtual void linearizeOplus();
 
     // dummy read and write functions because we don't care...
-    virtual bool read(std::istream &in) {}
+    virtual bool read(std::istream &in) { (void)in; return false; }
 
-    virtual bool write(std::ostream &out) const {}
+    virtual bool write(std::ostream &out) const { (void)out; return false; }
 
 protected:
     bool IsMarginalPoint(double x, double y)

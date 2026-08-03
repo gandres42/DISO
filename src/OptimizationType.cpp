@@ -91,6 +91,7 @@ void EdgeSE3SonarDirect::linearizeOplus()
     jacobian_pixel_uv(0, 1) = (getPixelValue(u, v + 1) - getPixelValue(u, v - 1)) / 2;
 
     Eigen::Matrix<double, 1, 6> jacobian_intensity_xi = jacobian_pixel_uv * jacobian_uv_ksai;
+    (void) jacobian_intensity_xi;
     _jacobianOplusXi = jacobian_pixel_uv * jacobian_uv_ksai;
 }
 

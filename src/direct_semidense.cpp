@@ -5,6 +5,7 @@
 #include <chrono>
 #include <ctime>
 #include <climits>
+#include <memory>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -68,6 +69,9 @@ poseEstimationDirect(const vector<Measurement> &measurements, cv::Mat* gray, Eig
 bool
 poseEstimationSonarDirect(const vector<Measurement> &meas, cv::Mat gray, Eigen::Isometry3d &Tcw,
                           double theta, double tx, double ty, double scale, cv::Mat& pre_img, cv::Mat& img);
+
+// Optional output file for the debug visualisation. Empty means "do not write".
+static std::string g_result_path;
 
 
 class EdgeSE3SonarDirect : public BaseUnaryEdge<1, double, VertexSE3Expmap>
@@ -150,9 +154,9 @@ public:
     }
 
     // dummy read and write functions because we don't care...
-    virtual bool read(std::istream &in) {}
+    virtual bool read(std::istream &in) { (void) in; return false; }
 
-    virtual bool write(std::ostream &out) const {}
+    virtual bool write(std::ostream &out) const { (void) out; return false; }
 
 protected:
     // get a gray scale value from reference image (bilinear interpolated)
@@ -222,7 +226,18 @@ std::string type2str(int type)
 int main(int argc, char** argv)
 {
     srand((unsigned int) time(0));
-    string path_to_dataset = "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/sonar_data";
+
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <path_to_dataset> [result_image_path]" << endl;
+        cerr << "  <path_to_dataset>   directory holding the sonar images 1.png .. 5.png" << endl;
+        cerr << "  [result_image_path] optional file to write the debug visualisation to;" << endl;
+        cerr << "                      the write is skipped when omitted" << endl;
+        return 1;
+    }
+    string path_to_dataset = argv[1];
+    if (argc > 2) {
+        g_result_path = argv[2];
+    }
 
     Eigen::Isometry3d Tcw = Eigen::Isometry3d::Identity();
     Eigen::AngleAxisd angle(0.01*M_PI,Eigen::Vector3d::UnitZ());
@@ -297,11 +312,11 @@ poseEstimationSonarDirect(const vector<Measurement> &measurements, cv::Mat gray,
 {
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(true);
@@ -366,7 +381,9 @@ poseEstimationSonarDirect(const vector<Measurement> &measurements, cv::Mat gray,
         }
         cv::imshow("result", img_show);
         cv::waitKey(0);
-        cv::imwrite("/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/result.png", img_show);
+        if (!g_result_path.empty()) {
+            cv::imwrite(g_result_path, img_show);
+        }
     }
     return true;
 }

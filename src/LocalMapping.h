@@ -10,10 +10,14 @@
 #include <set>
 #include <deque>
 #include <shared_mutex>
+#include <atomic>
+#include <string>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
-#include <ros/ros.h>
-#include <std_srvs/Empty.h>
+#include <rclcpp/rclcpp.hpp>
+#include <std_srvs/srv/empty.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 using namespace std;
 class Frame;
@@ -46,9 +50,11 @@ class LocalMapping;
 class LocalMapping : public enable_shared_from_this<LocalMapping>
 {
 public:
-    LocalMapping(shared_ptr<Track> pTracker);
-    LocalMapping(shared_ptr<Track> pTracker, Eigen::Isometry3d T_bw_b0);
+    LocalMapping(rclcpp::Node* node, shared_ptr<Track> pTracker);
+    LocalMapping(rclcpp::Node* node, shared_ptr<Track> pTracker, Eigen::Isometry3d T_bw_b0);
     void Run();
+    void RequestStop();
+    void SetDebugDir(const std::string &debug_dir);
     void NotifyTracker();
     // void SetState(shared_ptr<LocalMapState> pState);
     void InsertKeyFrame(shared_ptr<Frame> pF);
@@ -62,11 +68,13 @@ public:
     shared_ptr<Frame> GetLastFrameInWindow();
     deque<shared_ptr<Frame>> GetWindow();
     void Reset();
-    bool SaveMapCallback(std_srvs::EmptyRequest &req, std_srvs::EmptyResponse &res);
+    void SaveMapCallback(const std::shared_ptr<std_srvs::srv::Empty::Request> req,
+                         std::shared_ptr<std_srvs::srv::Empty::Response> res);
     void PubMap();
 
 
 protected:
+    rclcpp::Node* mpNode;
     shared_ptr<Track> mpTracker;
     // shared_ptr<LocalMapState> mState;
 
@@ -79,11 +87,14 @@ protected:
     shared_mutex mProcessingQueueMutex;
     deque<shared_ptr<Frame>> mProcessingQueue;
 
-    ros::Publisher mMarkerPub;
-    ros::Publisher mPointCloudPub;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr mMarkerPub;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr mPointCloudPub;
     std::map<int,shared_ptr<MapPoint>> mActiveMapPoints;
     //ros save service
-    ros::ServiceServer mSaveService;
+    rclcpp::Service<std_srvs::srv::Empty>::SharedPtr mSaveService;
+
+    std::atomic<bool> mbStopRequested{false};
+    std::string mDebugDir;
 public:
     Eigen::Isometry3d mT_bw_b0;
 

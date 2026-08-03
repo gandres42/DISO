@@ -10,42 +10,47 @@
 #include "OptimizationType.h"
 #include <thread>
 #include <chrono>
-#include <visualization_msgs/Marker.h>
-#include <visualization_msgs/MarkerArray.h>
-#include <sensor_msgs/Image.h>
+#include <functional>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <sensor_msgs/msg/image.hpp>
 
-#include <sensor_msgs/PointCloud2.h>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <pcl_conversions/pcl_conversions.h>
-#include <pcl-1.10/pcl/point_cloud.h>
-#include <pcl-1.10/pcl/point_types.h>
-#include <pcl-1.10/pcl/common/transforms.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/common/transforms.h>
 
 using namespace std;
 using namespace nanoflann;
 
-LocalMapping::LocalMapping(shared_ptr<Track> pTracker) : mpTracker(pTracker)
+LocalMapping::LocalMapping(rclcpp::Node* node, shared_ptr<Track> pTracker) : mpNode(node), mpTracker(pTracker)
 {
-    ros::NodeHandle nh;
-    mMarkerPub = nh.advertise<visualization_msgs::MarkerArray>("/direct_sonar/visualization_marker", 10);
-    mPointCloudPub = nh.advertise<sensor_msgs::PointCloud2>("/direct_sonar/point_cloud", 10);
-    mSaveService = nh.advertiseService("/direct_sonar/save_map", &LocalMapping::SaveMapCallback, this);
+    mMarkerPub = mpNode->create_publisher<visualization_msgs::msg::MarkerArray>("/direct_sonar/visualization_marker", rclcpp::QoS(10));
+    mPointCloudPub = mpNode->create_publisher<sensor_msgs::msg::PointCloud2>("/direct_sonar/point_cloud", rclcpp::QoS(10));
+    mSaveService = mpNode->create_service<std_srvs::srv::Empty>(
+            "/direct_sonar/save_map",
+            std::bind(&LocalMapping::SaveMapCallback, this,
+                      std::placeholders::_1, std::placeholders::_2));
     mT_bw_b0.setIdentity();
 };
 
 
-LocalMapping::LocalMapping(shared_ptr<Track> pTracker, Eigen::Isometry3d T_bw_b0):mT_bw_b0(T_bw_b0)
+LocalMapping::LocalMapping(rclcpp::Node* node, shared_ptr<Track> pTracker, Eigen::Isometry3d T_bw_b0):mpNode(node), mpTracker(pTracker), mT_bw_b0(T_bw_b0)
 {
-    ros::NodeHandle nh;
-    mPointCloudPub = nh.advertise<sensor_msgs::PointCloud2>("/direct_sonar/point_cloud", 10);
-    mMarkerPub = nh.advertise<visualization_msgs::MarkerArray>("/direct_sonar/visualization_marker", 10);
-    mSaveService = nh.advertiseService("/direct_sonar/save_map", &LocalMapping::SaveMapCallback, this);
+    mPointCloudPub = mpNode->create_publisher<sensor_msgs::msg::PointCloud2>("/direct_sonar/point_cloud", rclcpp::QoS(10));
+    mMarkerPub = mpNode->create_publisher<visualization_msgs::msg::MarkerArray>("/direct_sonar/visualization_marker", rclcpp::QoS(10));
+    mSaveService = mpNode->create_service<std_srvs::srv::Empty>(
+            "/direct_sonar/save_map",
+            std::bind(&LocalMapping::SaveMapCallback, this,
+                      std::placeholders::_1, std::placeholders::_2));
 };
 
 
 
 void LocalMapping::Run()
 {
-    while (1) {
+    while (rclcpp::ok() && !mbStopRequested.load()) {
         if (!mProcessingQueue.empty()) {
             ProcessKeyFrame();
             if (mActiveFrameWindow.size() > 1) {
@@ -58,6 +63,16 @@ void LocalMapping::Run()
             this_thread::sleep_for(chrono::milliseconds(10));
         }
     }
+}
+
+void LocalMapping::RequestStop()
+{
+    mbStopRequested = true;
+}
+
+void LocalMapping::SetDebugDir(const std::string &debug_dir)
+{
+    mDebugDir = debug_dir;
 }
 
 void LocalMapping::NotifyTracker()
@@ -108,12 +123,11 @@ void LocalMapping::OptimizeWindow()
     // unique_lock<shared_mutex> lock2(mpTracker->mTrackMutex);
     int max_frame_id = Frame::mFrameNum;
     g2o::SparseOptimizer optimizer;
-    g2o::BlockSolver_6_3::LinearSolverType* linearSolver;
 
-    linearSolver = new g2o::LinearSolverEigen<g2o::BlockSolver_6_3::PoseMatrixType>();
+    auto linearSolver = std::make_unique<g2o::LinearSolverEigen<g2o::BlockSolver_6_3::PoseMatrixType>>();
 
-    g2o::BlockSolver_6_3* solver_ptr = new g2o::BlockSolver_6_3(linearSolver);
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+    auto solver_ptr = std::make_unique<g2o::BlockSolver_6_3>(std::move(linearSolver));
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(std::move(solver_ptr));
     optimizer.setAlgorithm(solver);
     // optimizer.setVerbose(true);
 
@@ -136,7 +150,7 @@ void LocalMapping::OptimizeWindow()
             optimizer.addVertex(vSE3);
             if (rit == mActiveFrameWindow.rend() - 1) {
                 vSE3->setFixed(true);
-                ROS_INFO_STREAM("Fix ID:" << pF->mID);
+                RCLCPP_INFO_STREAM(mpNode->get_logger(), "Fix ID:" << pF->mID);
             }
             all_frame_vertex.insert(make_pair(pF, vSE3));
 
@@ -216,7 +230,7 @@ void LocalMapping::OptimizeWindow()
         e->computeError();
         odom_chi2+=e->chi2();
     }
-    ROS_INFO_STREAM("sonar chi2: " << sonar_chi2 << " odom chi2: " << odom_chi2);
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "sonar chi2: " << sonar_chi2 << " odom chi2: " << odom_chi2);
 
 
     optimizer.initializeOptimization(0);
@@ -257,7 +271,7 @@ deque<shared_ptr<Frame>> LocalMapping::GetWindow()
 
 void LocalMapping::Visualize()
 {
-    visualization_msgs::MarkerArray all_markers;
+    visualization_msgs::msg::MarkerArray all_markers;
 
 
     //clear marker
@@ -287,13 +301,13 @@ void LocalMapping::Visualize()
 
 
     //visualize landmark and data association
-    visualization_msgs::Marker line_marker;
+    visualization_msgs::msg::Marker line_marker;
     line_marker.header.frame_id = "map";
-    line_marker.header.stamp = ros::Time::now();
+    line_marker.header.stamp = mpNode->now();
     line_marker.ns = "line";
     line_marker.id = 0;
-    line_marker.type = visualization_msgs::Marker::LINE_LIST;
-    line_marker.action = visualization_msgs::Marker::ADD;
+    line_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
+    line_marker.action = visualization_msgs::msg::Marker::ADD;
     line_marker.scale.x = 0.01;
     line_marker.scale.y = 0.01;
     line_marker.scale.z = 0.01;
@@ -314,13 +328,13 @@ void LocalMapping::Visualize()
         Eigen::Isometry3d T_s0_si = pF->GetPose();
         Eigen::Isometry3d T_b0_bi = T_b_s * T_s0_si * T_b_s.inverse();
         Eigen::Quaterniond q_b0_bi(T_b0_bi.rotation());
-        visualization_msgs::Marker frame_marker;
+        visualization_msgs::msg::Marker frame_marker;
         frame_marker.header.frame_id = "map";
-        frame_marker.header.stamp = ros::Time::now();
+        frame_marker.header.stamp = mpNode->now();
         frame_marker.ns = "frame";
         frame_marker.id = pF->mID;
-        frame_marker.type = visualization_msgs::Marker::CUBE;
-        frame_marker.action = visualization_msgs::Marker::ADD;
+        frame_marker.type = visualization_msgs::msg::Marker::CUBE;
+        frame_marker.action = visualization_msgs::msg::Marker::ADD;
         frame_marker.pose.position.x = T_b0_bi.translation().x();
         frame_marker.pose.position.y = T_b0_bi.translation().y();
         frame_marker.pose.position.z = T_b0_bi.translation().z();
@@ -353,13 +367,13 @@ void LocalMapping::Visualize()
             shared_ptr<MapPoint> pMP = ob.second;
             int obs_num = pMP->getObservationNum();
             Eigen::Vector3d pos = pMP->getPosition();
-            visualization_msgs::Marker landmark_marker;
+            visualization_msgs::msg::Marker landmark_marker;
             landmark_marker.header.frame_id = "map";
-            landmark_marker.header.stamp = ros::Time::now();
+            landmark_marker.header.stamp = mpNode->now();
             landmark_marker.ns = "landmark";
             landmark_marker.id = pMP->mID;
-            landmark_marker.type = visualization_msgs::Marker::SPHERE;
-            landmark_marker.action = visualization_msgs::Marker::ADD;
+            landmark_marker.type = visualization_msgs::msg::Marker::SPHERE;
+            landmark_marker.action = visualization_msgs::msg::Marker::ADD;
             landmark_marker.pose.position.x = pos.x();
             landmark_marker.pose.position.y = pos.y();
             landmark_marker.pose.position.z = pos.z();
@@ -399,21 +413,21 @@ void LocalMapping::Visualize()
     }
     all_markers.markers.push_back(line_marker);
 
-    mMarkerPub.publish(all_markers);
+    mMarkerPub->publish(all_markers);
 
-    ROS_INFO_STREAM("PointCloud Size: "<<cloud.points.size());
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "PointCloud Size: "<<cloud.points.size());
     // convert pointcloud from sonar frame to odom frame
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud (new pcl::PointCloud<pcl::PointXYZ>);
     Eigen::Isometry3d T_bw_s0 = mT_bw_b0 * mpTracker->mT_b_s;
     pcl::transformPointCloud(cloud,*transformed_cloud,T_bw_s0.matrix().cast<float>());
 
 
-    sensor_msgs::PointCloud2 pc_msg;
+    sensor_msgs::msg::PointCloud2 pc_msg;
     pcl::toROSMsg(*transformed_cloud, pc_msg);
     pc_msg.header.frame_id = "odom";
 
     pc_msg.header.stamp = line_marker.header.stamp;
-    mPointCloudPub.publish(pc_msg);
+    mPointCloudPub->publish(pc_msg);
 
 
 }
@@ -449,11 +463,11 @@ void LocalMapping::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_p
 
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(false);
@@ -508,20 +522,26 @@ void LocalMapping::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_p
 
 
     //save edge chi2 to file
+    const bool dump = !mDebugDir.empty();
     ofstream f_chi2;
-    f_chi2.open("/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/debug/opt.txt",
-                ios::out);
+    if (dump) {
+        f_chi2.open(mDebugDir + "/opt.txt", ios::out);
+    }
 
     for (auto e: all_edges) {
         // e->computeError();
-        f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        if (dump) {
+            f_chi2 << "edge[" << e->id() << "]: " << e->error().norm() << endl;
+        }
         if (e->error().norm() > mpTracker->mGradientInlierThreshold * 0.5 || (e->error().norm() == 0)) {
             //remove from id_pixel
             id_pixel.erase(e->id());
         }
     }
     // ROS_INFO_STREAM("inlier number: " << id_pixel.size());
-    f_chi2.close();
+    if (dump) {
+        f_chi2.close();
+    }
 
     inliers_last.clear();
     for (auto it: id_pixel) {
@@ -594,28 +614,30 @@ void LocalMapping::PoseEstimationWindow2Frame(shared_ptr<Frame> pF_pre, shared_p
 
 }
 
-bool LocalMapping::SaveMapCallback(std_srvs::EmptyRequest &req, std_srvs::EmptyResponse &res)
+void LocalMapping::SaveMapCallback(const std::shared_ptr<std_srvs::srv::Empty::Request> req,
+                                   std::shared_ptr<std_srvs::srv::Empty::Response> res)
 {
+    (void)req;
+    (void)res;
     pcl::PointCloud<pcl::PointXYZ> cloud;
     for(auto it: mActiveMapPoints){
         auto pos = it.second->getPosition();
         pcl::PointXYZ p(pos.x(),pos.y(),pos.z());
         cloud.points.push_back(p);
     }
-    ROS_INFO_STREAM("PointCloud Size: "<<cloud.points.size());
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "PointCloud Size: "<<cloud.points.size());
     // convert pointcloud from sonar frame to odom frame
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud (new pcl::PointCloud<pcl::PointXYZ>);
     Eigen::Isometry3d T_bw_s0 = mT_bw_b0 * mpTracker->mT_b_s;
     pcl::transformPointCloud(cloud,*transformed_cloud,T_bw_s0.matrix().cast<float>());
 
 
-    sensor_msgs::PointCloud2 pc_msg;
+    sensor_msgs::msg::PointCloud2 pc_msg;
     pcl::toROSMsg(*transformed_cloud, pc_msg);
     pc_msg.header.frame_id = "map";
 
-    pc_msg.header.stamp = ros::Time::now();
-    mPointCloudPub.publish(pc_msg);
-    return true;
+    pc_msg.header.stamp = mpNode->now();
+    mPointCloudPub->publish(pc_msg);
 }
 
 void LocalMapping::PubMap()
@@ -626,18 +648,18 @@ void LocalMapping::PubMap()
         pcl::PointXYZ p(pos.x(),pos.y(),pos.z());
         cloud.points.push_back(p);
     }
-    ROS_INFO_STREAM("PointCloud Size: "<<cloud.points.size());
+    RCLCPP_INFO_STREAM(mpNode->get_logger(), "PointCloud Size: "<<cloud.points.size());
     // convert pointcloud from sonar frame to odom frame
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud (new pcl::PointCloud<pcl::PointXYZ>);
     Eigen::Isometry3d T_bw_s0 = mT_bw_b0 * mpTracker->mT_b_s;
     pcl::transformPointCloud(cloud,*transformed_cloud,T_bw_s0.matrix().cast<float>());
 
 
-    sensor_msgs::PointCloud2 pc_msg;
+    sensor_msgs::msg::PointCloud2 pc_msg;
     pcl::toROSMsg(*transformed_cloud, pc_msg);
     pc_msg.header.frame_id = "map";
 
-    pc_msg.header.stamp = ros::Time::now();
-    mPointCloudPub.publish(pc_msg);
+    pc_msg.header.stamp = mpNode->now();
+    mPointCloudPub->publish(pc_msg);
     // return true;
 }

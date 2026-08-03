@@ -6,6 +6,11 @@
 #include <chrono>
 #include <ctime>
 #include <climits>
+#include <filesystem>
+#include <iomanip>
+#include <memory>
+#include <sstream>
+#include <system_error>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -24,16 +29,18 @@
 #include <g2o/core/robust_kernel_impl.h>
 #include <g2o/types/sba/types_six_dof_expmap.h>
 
-#include <ros/ros.h>
-#include <image_transport/image_transport.h>
-#include <cv_bridge.h>
-#include <sensor_msgs/image_encodings.h>
-#include <nav_msgs/Odometry.h>
-#include <geometry_msgs/PoseStamped.h>
-#include <message_filters/subscriber.h>
-#include <message_filters/synchronizer.h>
-#include <message_filters/sync_policies/approximate_time.h>
-#include <image_transport/subscriber_filter.h>
+#include <rclcpp/rclcpp.hpp>
+#include <image_transport/image_transport.hpp>
+#include <cv_bridge/cv_bridge.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/header.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <message_filters/subscriber.hpp>
+#include <message_filters/synchronizer.hpp>
+#include <message_filters/sync_policies/approximate_time.hpp>
+#include <image_transport/subscriber_filter.hpp>
 
 
 using namespace std;
@@ -158,8 +165,10 @@ bool poseEstimationSonarDirect(const vector<Measurement> &meas, cv::Mat gray, Ei
                                cv::Mat &img);
 
 
+rclcpp::Node::SharedPtr G_NODE;
+std::string G_OUTPUT_DIR;
 image_transport::Publisher IMG_PUB;
-ros::Publisher ODOM_PUB;
+rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr ODOM_PUB;
 vector<Measurement> MEAS;
 cv::Mat CUR_IMG;
 cv::Mat PRE_IMG;
@@ -174,6 +183,28 @@ Eigen::Isometry3d Tsj_si_pre = Eigen::Isometry3d::Identity();
 Eigen::Isometry3d Tbs = Eigen::Isometry3d::Identity();
 Eigen::Isometry3d T_w_s0 = Eigen::Isometry3d::Identity();
 std::map<double, Eigen::Isometry3d> STAMP_POSE,STAMP_POSE_GT;
+
+/***
+* The evaluation/debug artefacts used to be written to hard coded absolute paths that only
+* existed on the original author's machine.  They now go into the directory given by the
+* "output_dir" parameter; when that parameter is empty the write is skipped altogether.
+*
+* @param file_name basename of the file to write
+* @return the full path to write to, or an empty string when writing is disabled
+*/
+std::string OutputPath(const std::string &file_name)
+{
+    if (G_OUTPUT_DIR.empty()) {
+        return std::string();
+    }
+    static bool dir_created = false;
+    if (!dir_created) {
+        std::error_code ec;
+        std::filesystem::create_directories(G_OUTPUT_DIR, ec);
+        dir_created = true;
+    }
+    return G_OUTPUT_DIR + "/" + file_name;
+}
 
 /***
 *
@@ -284,9 +315,9 @@ public:
     }
 
     // dummy read and write functions because we don't care...
-    virtual bool read(std::istream &in) {}
+    virtual bool read(std::istream &in) { (void) in; return false; }
 
-    virtual bool write(std::ostream &out) const {}
+    virtual bool write(std::ostream &out) const { (void) out; return false; }
 
 protected:
     inline double getSinlePixelValue(double x, double y)
@@ -437,11 +468,11 @@ bool poseEstimationSonarDirect2(cv::Mat &pre_img, cv::Mat &img, Eigen::Isometry3
 
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(false);
@@ -473,7 +504,7 @@ bool poseEstimationSonarDirect2(cv::Mat &pre_img, cv::Mat &img, Eigen::Isometry3
     return true;
 }
 
-void imageCallback(const sensor_msgs::ImageConstPtr &msg)
+void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr &msg)
 {
     try {
         FRAME_ID++;
@@ -529,12 +560,13 @@ void imageCallback(const sensor_msgs::ImageConstPtr &msg)
         PRE_IMG = CUR_IMG.clone();
 
     } catch (cv_bridge::Exception &e) {
-        ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+        RCLCPP_ERROR(rclcpp::get_logger("diso"), "Could not convert from '%s' to 'bgr8'.",
+                     msg->encoding.c_str());
     }
 }
 
 // pyramid version
-void imageCallback2(const sensor_msgs::ImageConstPtr &msg)
+void imageCallback2(const sensor_msgs::msg::Image::ConstSharedPtr &msg)
 {
     try {
         FRAME_ID++;
@@ -558,28 +590,31 @@ void imageCallback2(const sensor_msgs::ImageConstPtr &msg)
             }
             Tsj_si_pre = Tsj_si;
             Ts0_sj = Ts0_sj * Tsj_si.inverse() ;
-            double time = msg->header.stamp.toSec();
+            double time = rclcpp::Time(msg->header.stamp).seconds();
             cout << fixed << setprecision(12) << time << "\n" << Ts0_sj.matrix() << endl;
             STAMP_POSE.insert(std::make_pair(time, Ts0_sj));
 
             //write STAMP_POSE to a local file
-            std::ofstream outfile;
-            outfile.open(
-                    "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_traj_estimate.txt",
-                    std::ios_base::out);
-            outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-            for (auto s_p: STAMP_POSE) {
-                Eigen::Vector3d t = s_p.second.translation();
-                Eigen::Quaterniond q(s_p.second.rotation());
-                outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                        << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+            const std::string traj_file = OutputPath("stamped_traj_estimate.txt");
+            if (!traj_file.empty()) {
+                std::ofstream outfile;
+                outfile.open(
+                        traj_file,
+                        std::ios_base::out);
+                outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+                for (auto s_p: STAMP_POSE) {
+                    Eigen::Vector3d t = s_p.second.translation();
+                    Eigen::Quaterniond q(s_p.second.rotation());
+                    outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                            << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+                }
+                outfile.close();
             }
-            outfile.close();
 
 
         }
         else {
-            double time = msg->header.stamp.toSec();
+            double time = rclcpp::Time(msg->header.stamp).seconds();
             STAMP_POSE[time] = Ts0_sj;
         }
 
@@ -587,11 +622,12 @@ void imageCallback2(const sensor_msgs::ImageConstPtr &msg)
 
 
     } catch (cv_bridge::Exception &e) {
-        ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+        RCLCPP_ERROR(rclcpp::get_logger("diso"), "Could not convert from '%s' to 'bgr8'.",
+                     msg->encoding.c_str());
     }
 }
 
-void combinedCallback(const sensor_msgs::ImageConstPtr& image_msg, const nav_msgs::Odometry::ConstPtr& odom_msg)
+void combinedCallback(const sensor_msgs::msg::Image::ConstSharedPtr& image_msg, const nav_msgs::msg::Odometry::ConstSharedPtr& odom_msg)
 {
     try {
         Eigen::Vector3d t(odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y, odom_msg->pose.pose.position.z);
@@ -605,24 +641,27 @@ void combinedCallback(const sensor_msgs::ImageConstPtr& image_msg, const nav_msg
             T_w_s0 = T_w_bj*Tbs;
         }
         Eigen::Isometry3d T_s0_sj = T_w_s0.inverse() * T_w_bj *Tbs;
-        double time = odom_msg->header.stamp.toSec();
+        double time = rclcpp::Time(odom_msg->header.stamp).seconds();
         STAMP_POSE_GT.insert(std::make_pair(time, T_s0_sj));
         // cout << fixed << setprecision(12) << time << "\n" << T_w_bj.matrix() << endl;
 
         Eigen::Isometry3d T_sj_si = T_s0_sj.inverse() * Ts0_sj;
 
-        std::ofstream outfile;
-        outfile.open(
-                "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_groundtruth.txt",
-                std::ios_base::out);
-        outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-        for (auto s_p: STAMP_POSE_GT) {
-            Eigen::Vector3d t = s_p.second.translation();
-            Eigen::Quaterniond q(s_p.second.rotation());
-            outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                    << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+        const std::string gt_file = OutputPath("stamped_groundtruth.txt");
+        if (!gt_file.empty()) {
+            std::ofstream outfile;
+            outfile.open(
+                    gt_file,
+                    std::ios_base::out);
+            outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+            for (auto s_p: STAMP_POSE_GT) {
+                Eigen::Vector3d t = s_p.second.translation();
+                Eigen::Quaterniond q(s_p.second.rotation());
+                outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                        << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+            }
+            outfile.close();
         }
-        outfile.close();
 
         FRAME_ID++;
         cv::Mat img = cv_bridge::toCvShare(image_msg, "bgr8")->image;
@@ -645,28 +684,31 @@ void combinedCallback(const sensor_msgs::ImageConstPtr& image_msg, const nav_msg
             }
             Tsj_si_pre = Tsj_si;
             Ts0_sj = Ts0_sj * Tsj_si.inverse() ;
-            double time = image_msg->header.stamp.toSec();
+            double time = rclcpp::Time(image_msg->header.stamp).seconds();
             cout << fixed << setprecision(12) << time << "\n" << Ts0_sj.matrix() << endl;
             STAMP_POSE.insert(std::make_pair(time, Ts0_sj));
 
             //write STAMP_POSE to a local file
-            std::ofstream outfile;
-            outfile.open(
-                    "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_traj_estimate.txt",
-                    std::ios_base::out);
-            outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-            for (auto s_p: STAMP_POSE) {
-                Eigen::Vector3d t = s_p.second.translation();
-                Eigen::Quaterniond q(s_p.second.rotation());
-                outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                        << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+            const std::string traj_file = OutputPath("stamped_traj_estimate.txt");
+            if (!traj_file.empty()) {
+                std::ofstream outfile;
+                outfile.open(
+                        traj_file,
+                        std::ios_base::out);
+                outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+                for (auto s_p: STAMP_POSE) {
+                    Eigen::Vector3d t = s_p.second.translation();
+                    Eigen::Quaterniond q(s_p.second.rotation());
+                    outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                            << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+                }
+                outfile.close();
             }
-            outfile.close();
 
 
         }
         else {
-            double time = image_msg->header.stamp.toSec();
+            double time = rclcpp::Time(image_msg->header.stamp).seconds();
             STAMP_POSE[time] = Ts0_sj;
         }
 
@@ -674,11 +716,12 @@ void combinedCallback(const sensor_msgs::ImageConstPtr& image_msg, const nav_msg
 
 
     } catch (cv_bridge::Exception &e) {
-        ROS_ERROR("Could not convert from '%s' to 'bgr8'.", image_msg->encoding.c_str());
+        RCLCPP_ERROR(rclcpp::get_logger("diso"), "Could not convert from '%s' to 'bgr8'.",
+                     image_msg->encoding.c_str());
     }
 }
 
-void combinedCallback2(const sensor_msgs::ImageConstPtr& image_msg, const geometry_msgs::PoseStamped::ConstPtr& odom_msg)
+void combinedCallback2(const sensor_msgs::msg::Image::ConstSharedPtr& image_msg, const geometry_msgs::msg::PoseStamped::ConstSharedPtr& odom_msg)
 {
     try {
         Eigen::Vector3d t_odom(odom_msg->pose.position.x, odom_msg->pose.position.y, odom_msg->pose.position.z);
@@ -694,15 +737,15 @@ void combinedCallback2(const sensor_msgs::ImageConstPtr& image_msg, const geomet
             IS_INITED = true;
         }
         Eigen::Isometry3d T_s0_sj = T_w_s0.inverse() * T_w_bj *Tbs;
-        double time = odom_msg->header.stamp.toSec();
+        double time = rclcpp::Time(odom_msg->header.stamp).seconds();
         STAMP_POSE_GT.insert(std::make_pair(time, T_s0_sj));
         // cout << fixed << setprecision(4) << time << " Ts0_sj_gt:\n" << T_s0_sj.matrix() << endl;
         // cout << fixed << setprecision(4) << time << " T_w_bj:\n" << T_w_bj.matrix() << endl;
         // cout << fixed << setprecision(4) << time << " T_w_s0:\n" << T_w_s0.matrix() << endl;
-        nav_msgs::Odometry odom;
+        nav_msgs::msg::Odometry odom;
 
         // Fill out the Odometry message here. For example:
-        odom.header.stamp = ros::Time::now();
+        odom.header.stamp = G_NODE->now();
         odom.header.frame_id = "odom";
         odom.child_frame_id = "base_link";
 
@@ -717,22 +760,25 @@ void combinedCallback2(const sensor_msgs::ImageConstPtr& image_msg, const geomet
         odom.pose.pose.orientation.y = q_odom.y();
         odom.pose.pose.orientation.z = q_odom.z();
         odom.pose.pose.orientation.w = q_odom.w();
-        ODOM_PUB.publish(odom);
+        ODOM_PUB->publish(odom);
 
         Eigen::Isometry3d T_sj_si = T_s0_sj.inverse() * Ts0_sj;
 
-        std::ofstream outfile;
-        outfile.open(
-                "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_groundtruth.txt",
-                std::ios_base::out);
-        outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-        for (auto s_p: STAMP_POSE_GT) {
-            Eigen::Vector3d t = s_p.second.translation();
-            Eigen::Quaterniond q(s_p.second.rotation());
-            outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                    << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+        const std::string gt_file = OutputPath("stamped_groundtruth.txt");
+        if (!gt_file.empty()) {
+            std::ofstream outfile;
+            outfile.open(
+                    gt_file,
+                    std::ios_base::out);
+            outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+            for (auto s_p: STAMP_POSE_GT) {
+                Eigen::Vector3d t = s_p.second.translation();
+                Eigen::Quaterniond q(s_p.second.rotation());
+                outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                        << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+            }
+            outfile.close();
         }
-        outfile.close();
         return;
 
         FRAME_ID++;
@@ -756,28 +802,31 @@ void combinedCallback2(const sensor_msgs::ImageConstPtr& image_msg, const geomet
             }
             Tsj_si_pre = Tsj_si;
             Ts0_sj = Ts0_sj * Tsj_si.inverse() ;
-            double time = image_msg->header.stamp.toSec();
+            double time = rclcpp::Time(image_msg->header.stamp).seconds();
             cout << fixed << setprecision(4) << time << " Ts0_sj:\n" << Ts0_sj.matrix() << endl;
             STAMP_POSE.insert(std::make_pair(time, Ts0_sj));
 
             //write STAMP_POSE to a local file
-            std::ofstream outfile;
-            outfile.open(
-                    "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_traj_estimate.txt",
-                    std::ios_base::out);
-            outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-            for (auto s_p: STAMP_POSE) {
-                Eigen::Vector3d t = s_p.second.translation();
-                Eigen::Quaterniond q(s_p.second.rotation());
-                outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                        << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+            const std::string traj_file = OutputPath("stamped_traj_estimate.txt");
+            if (!traj_file.empty()) {
+                std::ofstream outfile;
+                outfile.open(
+                        traj_file,
+                        std::ios_base::out);
+                outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+                for (auto s_p: STAMP_POSE) {
+                    Eigen::Vector3d t = s_p.second.translation();
+                    Eigen::Quaterniond q(s_p.second.rotation());
+                    outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                            << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+                }
+                outfile.close();
             }
-            outfile.close();
 
 
         }
         else {
-            double time = image_msg->header.stamp.toSec();
+            double time = rclcpp::Time(image_msg->header.stamp).seconds();
             STAMP_POSE[time] = Ts0_sj;
         }
 
@@ -785,11 +834,12 @@ void combinedCallback2(const sensor_msgs::ImageConstPtr& image_msg, const geomet
 
 
     } catch (cv_bridge::Exception &e) {
-        ROS_ERROR("Could not convert from '%s' to 'bgr8'.", image_msg->encoding.c_str());
+        RCLCPP_ERROR(rclcpp::get_logger("diso"), "Could not convert from '%s' to 'bgr8'.",
+                     image_msg->encoding.c_str());
     }
 }
 
-void gtCallback(const nav_msgs::OdometryConstPtr &msg)
+void gtCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
 {
     Eigen::Vector3d t(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
     Eigen::Quaterniond q(msg->pose.pose.orientation.w, msg->pose.pose.orientation.x,
@@ -802,54 +852,61 @@ void gtCallback(const nav_msgs::OdometryConstPtr &msg)
         T_w_s0 = T_w_bj*Tbs;
     }
     Eigen::Isometry3d T_s0_sj = T_w_s0.inverse() * T_w_bj *Tbs;
-    double time = msg->header.stamp.toSec();
+    double time = rclcpp::Time(msg->header.stamp).seconds();
     STAMP_POSE_GT.insert(std::make_pair(time, T_s0_sj));
     // cout << fixed << setprecision(12) << time << "\n" << T_w_bj.matrix() << endl;
 
-    std::ofstream outfile;
-    outfile.open(
-            "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/evaluation/stamped_groundtruth.txt",
-            std::ios_base::out);
-    outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
-    for (auto s_p: STAMP_POSE_GT) {
-        Eigen::Vector3d t = s_p.second.translation();
-        Eigen::Quaterniond q(s_p.second.rotation());
-        outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
-                << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+    const std::string gt_file = OutputPath("stamped_groundtruth.txt");
+    if (!gt_file.empty()) {
+        std::ofstream outfile;
+        outfile.open(
+                gt_file,
+                std::ios_base::out);
+        outfile << "#timestamp tx ty tz qx qy qz qw" << endl;
+        for (auto s_p: STAMP_POSE_GT) {
+            Eigen::Vector3d t = s_p.second.translation();
+            Eigen::Quaterniond q(s_p.second.rotation());
+            outfile << fixed << setprecision(12) << s_p.first << " " << t.x() << " " << t.y() << " "
+                    << t.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << endl;
+        }
+        outfile.close();
     }
-    outfile.close();
 
 }
 
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "image_listener");
-    ros::NodeHandle nh;
+    rclcpp::init(argc, argv);
+    G_NODE = std::make_shared<rclcpp::Node>("image_listener");
+    G_OUTPUT_DIR = G_NODE->declare_parameter<std::string>("output_dir", std::string(""));
     // cv::namedWindow("view");
     // cv::startWindowThread();
-    image_transport::ImageTransport it(nh);
+    image_transport::ImageTransport it(*G_NODE);
     // image_transport::Subscriber sub = it.subscribe("/rexrov/blueview_p900/sonar_image", 100,
     //                                                imageCallback2);
+    // image_transport::TransportHints hints(*G_NODE, "compressed");
     // image_transport::Subscriber sub = it.subscribe("/gemini/gemini/cartesain_img", 100, imageCallback2,
-    //                                                image_transport::TransportHints("compressed"));
+    //                                                &hints);
     //subcribe gt
-    // ros::Subscriber sub_gt = nh.subscribe("/rexrov/pose_gt", 100, gtCallback);
-    // message_filters::Subscriber<sensor_msgs::Image> image_sub(nh, "/rexrov/blueview_p900/sonar_image", 100);
-    // message_filters::Subscriber<nav_msgs::Odometry> odom_sub(nh, "/rexrov/pose_gt", 1);
-    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, nav_msgs::Odometry> MySyncPolicy;
+    // rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_gt = G_NODE->create_subscription<nav_msgs::msg::Odometry>("/rexrov/pose_gt", rclcpp::QoS(100), gtCallback);
+    // message_filters::Subscriber<sensor_msgs::msg::Image> image_sub(G_NODE.get(), "/rexrov/blueview_p900/sonar_image", rclcpp::QoS(100));
+    // message_filters::Subscriber<nav_msgs::msg::Odometry> odom_sub(G_NODE.get(), "/rexrov/pose_gt", rclcpp::QoS(1));
+    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, nav_msgs::msg::Odometry> MySyncPolicy;
     // message_filters::Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), image_sub, odom_sub);
-    // sync.registerCallback(boost::bind(&combinedCallback, _1, _2));
+    // sync.registerCallback(std::bind(&combinedCallback, std::placeholders::_1, std::placeholders::_2));
 
 
-    image_transport::SubscriberFilter image_sub(it, "/son", 100, image_transport::TransportHints("compressed"));
-    message_filters::Subscriber<geometry_msgs::PoseStamped> odom_sub(nh, "/pose_gt", 100);
+    image_transport::SubscriberFilter image_sub;
+    image_sub.subscribe(*G_NODE, "/son", "compressed", rclcpp::QoS(100));
+    message_filters::Subscriber<geometry_msgs::msg::PoseStamped> odom_sub;
+    odom_sub.subscribe(G_NODE.get(), "/pose_gt", rclcpp::QoS(100));
 
-    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, geometry_msgs::PoseStamped> MySyncPolicy;
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, geometry_msgs::msg::PoseStamped> MySyncPolicy;
     message_filters::Synchronizer<MySyncPolicy> sync(MySyncPolicy(10), image_sub, odom_sub);
-    sync.registerCallback(boost::bind(&combinedCallback2, _1, _2));
+    sync.registerCallback(std::bind(&combinedCallback2, std::placeholders::_1, std::placeholders::_2));
 
     IMG_PUB = it.advertise("/sonar_image_out", 1);
-    ODOM_PUB = nh.advertise<nav_msgs::Odometry>("/sonar_odom", 50);
+    ODOM_PUB = G_NODE->create_publisher<nav_msgs::msg::Odometry>("/sonar_odom", rclcpp::QoS(50));
 
     //translate 1.15 0 0.3
     Tbs.setIdentity();
@@ -864,8 +921,10 @@ int main(int argc, char** argv)
     Tbs.rotate(a_y);
     Tbs.rotate(a_z);
 
-    ros::spin();
+    rclcpp::spin(G_NODE);
     cv::destroyWindow("view");
+    rclcpp::shutdown();
+    return 0;
 }
 
 bool poseEstimationSonarDirect(const vector<Measurement> &meas, cv::Mat gray, Eigen::Isometry3d &Tcw,
@@ -874,11 +933,11 @@ bool poseEstimationSonarDirect(const vector<Measurement> &meas, cv::Mat gray, Ei
 {
     // setup g2o
     typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 1>> DirectBlock;
-    DirectBlock::LinearSolverType* linearSolver = new g2o::LinearSolverDense<DirectBlock::PoseMatrixType>();
-    DirectBlock* solver_ptr = new DirectBlock(linearSolver);
+    auto linearSolver = std::make_unique<g2o::LinearSolverDense<DirectBlock::PoseMatrixType>>();
+    auto solver_ptr = std::make_unique<DirectBlock>(std::move(linearSolver));
     // g2o::OptimizationAlgorithmGaussNewton* solver = new g2o::OptimizationAlgorithmGaussNewton( solver_ptr ); // G-N
-    g2o::OptimizationAlgorithmLevenberg* solver = new g2o::OptimizationAlgorithmLevenberg(
-            solver_ptr); // L-M
+    auto* solver = new g2o::OptimizationAlgorithmLevenberg(
+            std::move(solver_ptr)); // L-M
     g2o::SparseOptimizer optimizer;
     optimizer.setAlgorithm(solver);
     optimizer.setVerbose(false);
@@ -947,17 +1006,20 @@ bool poseEstimationSonarDirect(const vector<Measurement> &meas, cv::Mat gray, Ei
             cv::circle(img_show, cv::Point2d(pixel_now(0, 0), pixel_now(1, 0) + img.rows), 2,
                        cv::Scalar(b, g, r), 1);
         }
-        sensor_msgs::ImagePtr msg_out = cv_bridge::CvImage(std_msgs::Header(), "bgr8",
+        sensor_msgs::msg::Image::SharedPtr msg_out = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8",
                                                            img_show).toImageMsg();
-        IMG_PUB.publish(msg_out);
+        IMG_PUB.publish(*msg_out);
         //get ros time
-        auto t = ros::Time::now();
+        auto t = G_NODE->now();
         stringstream ss;
-        ss << "/home/da/project/ros/direct_sonar_ws/src/direct_sonar_odometry/results/" << FRAME_ID - 1
+        ss << FRAME_ID - 1
            << "_" << FRAME_ID << ".png";
         // cv::imshow("result", img_show);
         // cv::waitKey(0);
-        cv::imwrite(ss.str(), img_show);
+        const std::string img_file = OutputPath(ss.str());
+        if (!img_file.empty()) {
+            cv::imwrite(img_file, img_show);
+        }
     }
     return true;
 }

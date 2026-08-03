@@ -4,7 +4,7 @@
 
 #include "Frame.h"
 #include "MapPoint.h"
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include "opencv2/imgproc.hpp"
 #include "opencv2/imgcodecs.hpp"
@@ -167,7 +167,7 @@ void Frame::DetectKeyPoints()
     // Find the minimum and maximum values in your floatImage.
     double minVal, maxVal;
     cv::minMaxLoc(grad, &minVal, &maxVal);
-    // ROS_INFO_STREAM("grad max:" << maxVal << " min:" << minVal);
+    // RCLCPP_INFO_STREAM(rclcpp::get_logger("diso"), "grad max:" << maxVal << " min:" << minVal);
 
     // Normalize the float image to the range [-128, 127].
     cv::Mat normalized_grad;
@@ -258,7 +258,7 @@ void Frame::DetectKeyPoints()
             }
         }
     }
-    ROS_INFO_STREAM("KeyPoints: " << mKeyPoints.size() << endl);
+    RCLCPP_INFO_STREAM(rclcpp::get_logger("diso"), "KeyPoints: " << mKeyPoints.size());
 
 }
 
@@ -343,7 +343,7 @@ void Frame::SetObservationsL2F(const map<int, pair<double, double>> &Observation
 void Frame::AddObservation(shared_ptr<MapPoint> p_mp, const pair<double, double> &key)
 {
     if (mObservations_L2F.count(p_mp->mID)) {
-        // ROS_WARN_STREAM("Observation already exists. MapPoint" << p_mp->mID << " frame" << mID);
+        // RCLCPP_WARN_STREAM(rclcpp::get_logger("diso"), "Observation already exists. MapPoint" << p_mp->mID << " frame" << mID);
         // RemoveObservation(p_mp->mID);
         // unique_lock<shared_mutex> lock(mFrameMutex);
         // mObservations_L2F.insert(make_pair(p_mp->mID, key));
