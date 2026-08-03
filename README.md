@@ -75,7 +75,7 @@ pipeline only consumes the first two — the sonar image and, through
 ### Run
 
 ```bash
-ros2 launch direct_sonar_odometry aracati2017.launch.py \
+ros2 launch direct_sonar_odometry aracati2017.launch.xml \
     bag:=/path/to/aracati2017 \
     use_sim_time:=true \
     output_dir:=$HOME/diso_results
@@ -93,7 +93,6 @@ Launch arguments:
 | `use_sim_time` | `false` | follow the bag's `/clock` |
 | `output_dir` | *(empty)* | where `stamped_traj_estimate.txt` (the sonar estimate) and `stamped_groundtruth_gt.txt` (the odometry prior, as the reference trajectory in evo's naming convention) are written; empty disables them |
 | `debug_dir` | *(empty)* | per-edge chi2 dumps and debug images; empty disables them |
-| `rviz` | `true` | start RViz2 with `launch/sonar_odometry.rviz` |
 | `odom_source` | `cmd_vel` | `cmd_vel` runs the bundled dead-reckoning node to produce `/odom_pose`; `external` expects you to publish it |
 
 #### Inputs

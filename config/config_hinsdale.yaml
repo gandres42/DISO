@@ -3,10 +3,10 @@
 SonarTopic: "/son"
 OdomTopic: "/odom_pose"
 Range: 5.0
-GradientThreshold: 10.0 # 0~255
-PyramidLayer: 2
+GradientThreshold: 100.0 # 0~255
+PyramidLayer: 1
 FOV: 60.0
-GradientInlierThreshold: 10.0
+GradientInlierThreshold: 100.0
 LossThreshold: 50.0
 #transformation matrix from sonar to body frame
 Tbs: !!opencv-matrix

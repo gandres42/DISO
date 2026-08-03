@@ -1,0 +1,48 @@
+<launch>
+  <arg name="config"
+       default="$(find-pkg-share direct_sonar_odometry)/config/config_aracati2017.yaml"
+       description="Path to the DISO settings file."/>
+  <arg name="output_dir" default=""
+       description="Directory for the trajectory dumps.  Empty disables them."/>
+  <arg name="debug_dir" default=""
+       description="Directory for the per-edge chi2 dumps.  Empty disables them."/>
+  <arg name="use_sim_time" default="false"
+       description="Use the /clock topic instead of the system clock."/>
+  <arg name="bag" default=""
+       description="Path to a rosbag2 directory to play.  Empty does not play anything."/>
+  <arg name="bag_args" default="--clock -r 0.8"
+       description="Extra arguments passed to &quot;ros2 bag play&quot;."/>
+  <arg name="odom_source" default="cmd_vel"
+       description="Where the odometry prior on &quot;OdomTopic&quot; comes from. &quot;cmd_vel&quot; runs the bundled dead-reckoning node; &quot;external&quot; assumes something else publishes it.">
+    <choice value="cmd_vel"/>
+    <choice value="external"/>
+  </arg>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_map_to_odom"
+        args="--x 0 --y 0 --z 0 --qx 0 --qy 0 --qz 0 --qw 1 --frame-id map --child-frame-id odom">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="static_tf_odom_to_orb_slam"
+        args="--x 0 --y 0 --z 0 --qx 0 --qy 0 --qz 0 --qw 1 --frame-id odom --child-frame-id orb_slam">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node pkg="direct_sonar_odometry" exec="cmd_vel_odom" name="cmd_vel_odom" output="screen"
+        if="$(equals $(var odom_source) cmd_vel)">
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node pkg="direct_sonar_odometry" exec="aracati2017_node" name="direct_sonar_odometry_node"
+        output="screen" args="$(var config)">
+    <param name="settings_file" value="$(var config)"/>
+    <param name="output_dir" value="$(var output_dir)"/>
+    <param name="debug_dir" value="$(var debug_dir)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <!--
+  <executable cmd="ros2 bag play $(var bag) $(var bag_args)" output="screen"
+              unless="$(equals $(var bag) '')"/>
+  -->
+</launch>

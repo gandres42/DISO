@@ -142,9 +142,9 @@ void Track::TrackFromLastFrame(const Frame &f)
         pF->mInliers = inliers_last;
         mpCurrentFrame->mInliers = inliers_cur;
         BuildAssociation(pF, mpCurrentFrame, association, mLossThreshold);
-        // RCLCPP_INFO_STREAM(mpNode->get_logger(),
-        //         "tracked points: " << mpCurrentFrame->GetObservationsF2L().size() << " from Frame: "
-        //                            << pF->mID);
+        RCLCPP_INFO_STREAM(mpNode->get_logger(),
+                "tracked points: " << mpCurrentFrame->GetObservationsF2L().size() << " from Frame: "
+                                   << pF->mID);
         if (mpCurrentFrame->GetObservationsF2L().size() >= mLossThreshold || window_index > 2) {
             break;
         }

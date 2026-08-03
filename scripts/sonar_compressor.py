@@ -35,7 +35,7 @@ class SonarCompressorNode(Node):
             cv_image = cv2.cvtColor(cv_image, cv2.COLOR_GRAY2RGB)
 
             # 2. Compress the image to JPEG (OpenCV expects BGR natively for this)
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 100]
             success, encoded_image = cv2.imencode('.jpg', cv_image, encode_param)
 
             if success:
