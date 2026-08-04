@@ -108,12 +108,6 @@ target_link_libraries(aracati2017_node PRIVATE direct_sonar_odometry_lib)
 add_executable(direct_sonar_odometry_node src/main.cpp)
 target_link_libraries(direct_sonar_odometry_node PRIVATE direct_sonar_odometry_lib)
 
-# Dead-reckoning odometry prior for the Aracati2017 bag; see src/CmdVelOdom.cpp.
-add_executable(cmd_vel_odom src/CmdVelOdom.cpp)
-target_link_libraries(cmd_vel_odom PRIVATE
-  rclcpp::rclcpp
-  ${geometry_msgs_TARGETS}
-)
 
 add_executable(traj_align src/traj_se3_align.cpp)
 target_include_directories(traj_align PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -154,7 +148,6 @@ install(TARGETS direct_sonar_odometry_lib
 install(TARGETS
   aracati2017_node
   direct_sonar_odometry_node
-  cmd_vel_odom
   traj_align
   direct_semidense_node
   direct_semidense_test

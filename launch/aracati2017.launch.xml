@@ -8,10 +8,6 @@
        description="Directory for the per-edge chi2 dumps.  Empty disables them."/>
   <arg name="use_sim_time" default="false"
        description="Use the /clock topic instead of the system clock."/>
-  <arg name="bag" default=""
-       description="Path to a rosbag2 directory to play.  Empty does not play anything."/>
-  <arg name="bag_args" default="--clock -r 0.8"
-       description="Extra arguments passed to &quot;ros2 bag play&quot;."/>
   <arg name="odom_source" default="cmd_vel"
        description="Where the odometry prior on &quot;OdomTopic&quot; comes from. &quot;cmd_vel&quot; runs the bundled dead-reckoning node; &quot;external&quot; assumes something else publishes it.">
     <choice value="cmd_vel"/>
@@ -28,7 +24,7 @@
     <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>
 
-  <node pkg="direct_sonar_odometry" exec="cmd_vel_odom" name="cmd_vel_odom" output="screen"
+  <node pkg="eval" exec="cmd_vel_odom" name="cmd_vel_odom" output="screen"
         if="$(equals $(var odom_source) cmd_vel)">
     <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>

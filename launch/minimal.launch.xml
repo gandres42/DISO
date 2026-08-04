@@ -24,7 +24,7 @@
     <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>
 
-  <node pkg="direct_sonar_odometry" exec="cmd_vel_odom" name="cmd_vel_odom" output="screen"
+  <node pkg="eval" exec="cmd_vel_odom" name="cmd_vel_odom" output="screen"
         if="$(equals $(var odom_source) cmd_vel)">
     <param name="use_sim_time" value="$(var use_sim_time)"/>
   </node>
