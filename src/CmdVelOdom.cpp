@@ -32,11 +32,10 @@ public:
     CmdVelOdom() : rclcpp::Node("cmd_vel_odom")
     {
         mCmdVelTopic = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
-        mOdomTopic = declare_parameter<std::string>("odom_topic", "/odom_pose");
+        mOdomTopic = declare_parameter<std::string>("odom_topic", "/odom_pose_diso");
         mOdomFrameId = declare_parameter<std::string>("odom_frame_id", "odom");
 
-        mOdomPub = create_publisher<geometry_msgs::msg::PoseStamped>(mOdomTopic,
-                                                                     rclcpp::QoS(10));
+        mOdomPub = create_publisher<geometry_msgs::msg::PoseStamped>(mOdomTopic, rclcpp::QoS(10));
         mCmdVelSub = create_subscription<geometry_msgs::msg::TwistStamped>(
                 mCmdVelTopic, rclcpp::QoS(50),
                 std::bind(&CmdVelOdom::CmdVelCallback, this, std::placeholders::_1));

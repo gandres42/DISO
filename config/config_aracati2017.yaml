@@ -1,7 +1,7 @@
 %YAML:1.0
 
 SonarTopic: "/son"
-OdomTopic: "/odom_pose"
+OdomTopic: "/odom_pose_diso"
 Range: 48.2896 # range was scaled by SIM3 alignment with GT because of the sacle issue mentioned in the paper
 GradientThreshold: 170.0 # 0~255
 PyramidLayer: 3
