@@ -262,7 +262,7 @@ void Frame::DetectKeyPoints()
 
 }
 
-bool Frame::IsMarginalPoint(double x, double y)
+bool Frame::IsMarginalPoint(double x, double y) const
 {
     Eigen::Vector3d p_3d = sonar2Dto3D(Eigen::Vector2d(x, y), mTheta, mTx, mTy, mScale);
     //cartesian to polar

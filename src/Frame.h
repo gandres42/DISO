@@ -23,7 +23,7 @@ public:
     int mID;
     void ComputePyramid(const cv::Mat &img, vector<cv::Mat> &img_pyramid_out, int layer = 5);
     void DetectKeyPoints();
-    bool IsMarginalPoint(double x, double y);
+    bool IsMarginalPoint(double x, double y) const;
     void AddObservation(shared_ptr<MapPoint> p_mp, const pair<double,double>& key);
     void RemoveObservation(int mp_id);
     void VisualizeHist(const cv::Mat mat);

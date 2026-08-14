@@ -15,6 +15,7 @@
 #include <Eigen/Geometry>
 #include <opencv2/core/core.hpp>
 #include "nanoflann.hpp"
+#include "AffineSeed.h"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -55,7 +56,8 @@ class Track : public enable_shared_from_this<Track>
 {
 public:
     Track(rclcpp::Node* node, double range, double fov, int pyramid_layer, int loss_threshold,
-          double gradient_threshold, Eigen::Isometry3d& T_b_s, bool use_odom = true);
+          double gradient_threshold, Eigen::Isometry3d& T_b_s, bool use_odom = true,
+          const AffineSeedParams& affine_params = AffineSeedParams());
 
     shared_ptr<Frame> mpCurrentFrame;
     shared_ptr<Frame> mpLastFrame;
@@ -68,7 +70,10 @@ public:
 
     void TrackFromWindow(const Frame &f);
 
-    void PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur);
+    //Seeds f_cur's pose with the estimated motion from f_pre.  Returns true when that
+    //seed came from a real measurement (odometry, or the affine image alignment) rather
+    //than from extrapolating the last relative motion.
+    bool PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur);
 
     // void OptimizeWindow();
 
@@ -135,9 +140,14 @@ private:
     //current pose
     Eigen::Isometry3d mT_w_sj = Eigen::Isometry3d::Identity();
 
-    //relative pose from the last successful frame-to-frame track, used to seed the
-    //next frame's initial pose when mUseOdom is false (constant velocity model)
+    //relative pose from the last successful frame-to-frame track.  Only a fallback now:
+    //PredictCurrentPose prefers the affine image alignment and drops back to
+    //extrapolating this when the alignment fails.
     Eigen::Isometry3d mLastRelativeMotion = Eigen::Isometry3d::Identity();
+
+    //affine-alignment seed configuration, and the result of the most recent estimate
+    AffineSeedParams mAffineParams;
+    AffineSeedResult mLastSeed;
 
     //Local Frame window
     // int mWindowSize = 5;

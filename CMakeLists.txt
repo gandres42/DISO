@@ -81,6 +81,7 @@ add_library(direct_sonar_odometry_lib SHARED
   src/Track.cpp
   src/OptimizationType.cpp
   src/LocalMapping.cpp
+  src/AffineSeed.cpp
 )
 target_include_directories(direct_sonar_odometry_lib PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>

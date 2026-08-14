@@ -26,13 +26,23 @@
 using namespace nanoflann;
 using namespace std;
 
+namespace {
+// fraction of the points fed into a frame-to-frame solve that must come back as
+// photometric inliers for its result to be trusted
+constexpr double kFrame2FrameInlierRatio = 0.3;
+}
+
 Track::Track(rclcpp::Node* node, double range, double fov, int pyramid_layer, int loss_threshold,
              double gradient_threshold,
-             Eigen::Isometry3d &T_b_s, bool use_odom) : mpNode(node), mRange(range), mFOV(fov),
+             Eigen::Isometry3d &T_b_s, bool use_odom,
+             const AffineSeedParams &affine_params) : mpNode(node),
                                          mPyramidLayer(pyramid_layer),
-                                         mT_b_s(T_b_s), mLossThreshold(loss_threshold),
+                                         mAffineParams(affine_params),
+                                         mT_b_s(T_b_s),
                                          mGradientInlierThreshold(gradient_threshold),
-                                         mUseOdom(use_odom)
+                                         mLossThreshold(loss_threshold),
+                                         mUseOdom(use_odom),
+                                         mRange(range), mFOV(fov)
 {
     mImagePub = mpNode->create_publisher<sensor_msgs::msg::Image>("/direct_sonar/image",
                                                                  rclcpp::QoS(10));
@@ -112,11 +122,13 @@ void Track::TrackFromLastFrame(const Frame &f)
     set<pair<double, double>> inliers_last, inliers_cur;
     map<pair<double, double>, pair<double, double>> association;
     // shared_ptr<Frame> pF_last = mActiveFrameWindow.back();
-    PredictCurrentPose(mpLastFrame, mpCurrentFrame);
+    const bool have_prior = PredictCurrentPose(mpLastFrame, mpCurrentFrame);
     Eigen::Isometry3d T_s0_scur = mpCurrentFrame->GetPose();
     Eigen::Isometry3d T_s0_spre = mpLastFrame->GetPose();
     Eigen::Isometry3d Tsicur_sipre = T_s0_scur.inverse() * T_s0_spre;
-    // Eigen::Isometry3d Tsicur_sipre = Eigen::Isometry3d::Identity();
+    // kept so a photometric refinement that comes out under-constrained can fall back
+    // on the measurement that seeded it instead of on nothing
+    const Eigen::Isometry3d T_seed = Tsicur_sipre;
     bool frame2frame_ok = true;
     for (int layer = mPyramidLayer - 1; layer >= 0; layer--) {
         cv::Mat img = mpCurrentFrame->mPyramid[layer];
@@ -128,9 +140,15 @@ void Track::TrackFromLastFrame(const Frame &f)
         mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
         mLastRelativeMotion = Tsicur_sipre.inverse();
     }
+    else if (have_prior) {
+        // The photometric solve did not keep enough inliers to be trusted, but the affine
+        // alignment that seeded it is an independent measurement of the same motion, so
+        // use that rather than freezing the trajectory.
+        mT_w_sj = mpLastFrame->GetPose() * T_seed.inverse();
+        mLastRelativeMotion = T_seed.inverse();
+    }
     else {
-        // too few sonar features to constrain the pose; assume no motion rather
-        // than trust a degenerate solve
+        // nothing constrains the pose; assume no motion rather than trust a degenerate solve
         mT_w_sj = mpLastFrame->GetPose();
         mLastRelativeMotion = Eigen::Isometry3d::Identity();
     }
@@ -201,11 +219,13 @@ void Track::TrackFromWindow(const Frame &f)
     set<pair<double, double>> inliers_last, inliers_cur;
     map<pair<double, double>, pair<double, double>> association;
     // shared_ptr<Frame> pF_last = mActiveFrameWindow.back();
-    PredictCurrentPose(mpLastFrame, mpCurrentFrame);
+    const bool have_prior = PredictCurrentPose(mpLastFrame, mpCurrentFrame);
     Eigen::Isometry3d T_s0_scur = mpCurrentFrame->GetPose();
     Eigen::Isometry3d T_s0_spre = mpLastFrame->GetPose();
     Eigen::Isometry3d Tsicur_sipre = T_s0_scur.inverse() * T_s0_spre;
-    // Eigen::Isometry3d Tsicur_sipre = Eigen::Isometry3d::Identity();
+    // kept so a photometric refinement that comes out under-constrained can fall back
+    // on the measurement that seeded it instead of on nothing
+    const Eigen::Isometry3d T_seed = Tsicur_sipre;
     bool frame2frame_ok = true;
     for (int layer = mPyramidLayer - 1; layer >= 0; layer--) {
         cv::Mat img = mpCurrentFrame->mPyramid[layer];
@@ -217,9 +237,15 @@ void Track::TrackFromWindow(const Frame &f)
         mT_w_sj = mpLastFrame->GetPose() * Tsicur_sipre.inverse();
         mLastRelativeMotion = Tsicur_sipre.inverse();
     }
+    else if (have_prior) {
+        // The photometric solve did not keep enough inliers to be trusted, but the affine
+        // alignment that seeded it is an independent measurement of the same motion, so
+        // use that rather than freezing the trajectory.
+        mT_w_sj = mpLastFrame->GetPose() * T_seed.inverse();
+        mLastRelativeMotion = T_seed.inverse();
+    }
     else {
-        // too few sonar features to constrain the pose; assume no motion rather
-        // than trust a degenerate solve
+        // nothing constrains the pose; assume no motion rather than trust a degenerate solve
         mT_w_sj = mpLastFrame->GetPose();
         mLastRelativeMotion = Eigen::Isometry3d::Identity();
     }
@@ -427,7 +453,14 @@ bool Track::PoseEstimationFrame2Frame(cv::Mat &pre_img, cv::Mat &img, Eigen::Iso
     //
     // }
 
-    return inliers_current.size() > 100;
+    // This gate used to be a hardcoded "> 100".  DetectKeyPoints only yields ~100-200
+    // points on a 222x222 fan, so that demanded 50-98% of every keypoint in the frame
+    // survive as a photometric inlier -- on the no-odom path it essentially never passed
+    // and the caller fell back to zero motion on every frame.  Scale it to the number of
+    // points actually handed to the solve instead, with a floor at the loss threshold.
+    const size_t needed = max(static_cast<size_t>(mLossThreshold),
+                              static_cast<size_t>(kFrame2FrameInlierRatio * obs.size()));
+    return inliers_current.size() >= needed;
 }
 
 
@@ -888,14 +921,30 @@ void Track::SetLocalMaper(const shared_ptr<LocalMapping> &pLocalMaper)
     mpLocalMaper = pLocalMaper;
 }
 
-void Track::PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur)
+bool Track::PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur)
 {
     if (!mUseOdom) {
-        // constant velocity model: assume the same relative motion as the last
-        // successfully tracked frame pair, instead of an external odom prior
+        // No external odometry, so the seed has to come out of the imagery itself.
+        // Align f_pre's gradient keypoints into f_cur with sparse optical flow, fit a
+        // rigid 2D transform to the surviving correspondences, and lift that to SE3.
+        // The constant velocity model this replaced could not bootstrap: it starts at
+        // zero motion, and the direct solver's convergence basin is a couple of pixels
+        // while a degree of yaw already moves a 3m return by ~13px, so the first solve
+        // failed, which left the velocity at zero, which seeded the next solve at zero.
+        mLastSeed = EstimateAffineSeed(*f_pre, *f_cur, mAffineParams);
+        if (mLastSeed.ok) {
+            f_cur->SetPose(f_pre->GetPose() * mLastSeed.T_cur_pre.inverse());
+            return true;
+        }
+        RCLCPP_DEBUG_STREAM(mpNode->get_logger(),
+                "affine seed unavailable (" << mLastSeed.reason << ", tracked="
+                                            << mLastSeed.tracked << " inliers="
+                                            << mLastSeed.inliers
+                                            << "), extrapolating last motion");
         f_cur->SetPose(f_pre->GetPose() * mLastRelativeMotion);
-        return;
+        return false;
     }
+    mLastSeed = AffineSeedResult();
     Eigen::Isometry3d T_b0_bipre = f_pre->GetOdomPose();
     Eigen::Isometry3d T_b0_bicur = f_cur->GetOdomPose();
     Eigen::Isometry3d T_bipre_bicur = T_b0_bipre.inverse() * T_b0_bicur;
@@ -903,6 +952,7 @@ void Track::PredictCurrentPose(shared_ptr<Frame> f_pre, shared_ptr<Frame> f_cur)
     Eigen::Isometry3d T_s0_sipre = f_pre->GetPose();
     Eigen::Isometry3d T_s0_si_prediction = T_s0_sipre * T_sipre_sicur;
     f_cur->SetPose(T_s0_si_prediction);
+    return true;
 }
 
 void Track::PublishPose()

@@ -64,6 +64,27 @@ System::System(const std::string &strSettingFile)
     double gradient_inlier_threshold = (double) fsSettings["GradientInlierThreshold"];
     cv::FileNode use_odom_node = fsSettings["UseOdom"];
     mUseOdom = use_odom_node.empty() ? true : ((int) use_odom_node != 0);
+
+    // Frame-to-frame seed from affine feature alignment; only consulted when there is no
+    // external odometry to seed from.  Defaults live in AffineSeedParams.
+    AffineSeedParams affine;
+    auto read_double = [&fsSettings](const char* key, double &out) {
+        cv::FileNode node = fsSettings[key];
+        if (!node.empty()) { out = (double) node; }
+    };
+    auto read_int = [&fsSettings](const char* key, int &out) {
+        cv::FileNode node = fsSettings[key];
+        if (!node.empty()) { out = (int) node; }
+    };
+    cv::FileNode affine_node = fsSettings["AffineSeed"];
+    if (!affine_node.empty()) { affine.enabled = ((int) affine_node != 0); }
+    read_int("AffineSeedWindow", affine.lk_window);
+    read_int("AffineSeedLevels", affine.lk_levels);
+    read_int("AffineSeedMinInliers", affine.min_inliers);
+    read_double("AffineSeedForwardBackwardPx", affine.forward_backward_px);
+    read_double("AffineSeedRansacPx", affine.ransac_px);
+    read_double("AffineSeedMaxTranslation", affine.max_translation_m);
+    read_double("AffineSeedMaxYawDeg", affine.max_yaw_deg);
     cv::FileNode node = fsSettings["Tbs"];
     cv::Mat Tbs;
     mT_b_s = Eigen::Isometry3d::Identity();
@@ -89,13 +110,20 @@ System::System(const std::string &strSettingFile)
     RCLCPP_INFO_STREAM(get_logger(), "LossThreshold: " << loss_threshold);
     RCLCPP_INFO_STREAM(get_logger(), "GradientInlierThreshold: " << gradient_inlier_threshold);
     RCLCPP_INFO_STREAM(get_logger(), "UseOdom: " << mUseOdom);
+    if (!mUseOdom) {
+        RCLCPP_INFO_STREAM(get_logger(), "AffineSeed: " << affine.enabled
+                                 << " (window " << affine.lk_window << " levels "
+                                 << affine.lk_levels << " min_inliers " << affine.min_inliers
+                                 << " fb " << affine.forward_backward_px << "px ransac "
+                                 << affine.ransac_px << "px)");
+    }
     RCLCPP_INFO_STREAM(get_logger(), "Tbs: \n" << fixed << setprecision(9) << Tbs);
 
 
     // NOTE: rclcpp::Node declares a static make_shared(), which would hide std::make_shared
     // here, so these have to be explicitly qualified.
     mpTracker = std::make_shared<Track>(this, mRange, mFOV, mPyramidLayer, loss_threshold,
-                                   gradient_inlier_threshold, mT_b_s, mUseOdom);
+                                   gradient_inlier_threshold, mT_b_s, mUseOdom, affine);
     mpTracker->SetOutputConfig(mOutputDir, mDebugDir);
     shared_ptr<TrackState> track_state = std::make_shared<TrackUpToDate>(mpTracker);
     mpTracker->SetState(track_state);
